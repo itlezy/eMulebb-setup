@@ -1,0 +1,18 @@
+# Managed workspace output
+../eMulebb/
+
+# Logs and local overrides
+*.log
+*.local.psd1
+*.local.json
+*.local.yaml
+*.local.yml
+
+# IDE and editor state
+.vs/
+.vscode/
+*.code-workspace
+
+# OS cruft
+Thumbs.db
+Desktop.ini
