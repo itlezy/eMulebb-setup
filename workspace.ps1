@@ -452,7 +452,7 @@ function Get-IgnoredRepoStatusPrefixes {
         [Parameter(Mandatory)][hashtable]$Repo
     )
 
-    if ($Repo.Role -ne 'BuildWorkspace') {
+    if (-not $Repo.ContainsKey('Role') -or $Repo.Role -ne 'BuildWorkspace') {
         return @()
     }
 
@@ -510,10 +510,10 @@ function Ensure-ExpectedBranches {
         $normalizedBranch = Normalize-BranchName -Branch $branch
         Write-Host "Ensuring branch $normalizedBranch in $($Repo.Name)"
 
-        Invoke-Checked -FilePath 'git' -ArgumentList @('-C', $repoPath, 'fetch', 'origin', "refs/heads/$normalizedBranch`:refs/remotes/origin/$normalizedBranch") -WorkingDirectory $Config.TargetRoot -Label "git fetch branch $($Repo.Name) $normalizedBranch"
+        $null = Invoke-Checked -FilePath 'git' -ArgumentList @('-C', $repoPath, 'fetch', 'origin', "refs/heads/$normalizedBranch`:refs/remotes/origin/$normalizedBranch") -WorkingDirectory $Config.TargetRoot -Label "git fetch branch $($Repo.Name) $normalizedBranch"
 
         if ($normalizedBranch -notin $localBranches) {
-            Invoke-Checked -FilePath 'git' -ArgumentList @('-C', $repoPath, 'branch', '--track', $normalizedBranch, "origin/$normalizedBranch") -WorkingDirectory $Config.TargetRoot -Label "git create branch $($Repo.Name) $normalizedBranch"
+            $null = Invoke-Checked -FilePath 'git' -ArgumentList @('-C', $repoPath, 'branch', '--track', $normalizedBranch, "origin/$normalizedBranch") -WorkingDirectory $Config.TargetRoot -Label "git create branch $($Repo.Name) $normalizedBranch"
             $localBranches += $normalizedBranch
         }
     }
@@ -944,9 +944,9 @@ function Clone-Repo {
     Write-Host "Cloning $($Repo.Name) -> $targetPath"
     Write-Log -Config $Config -Message "Clone start: $($Repo.Name) [$branch]"
 
-    Invoke-Checked -FilePath 'git' -ArgumentList @('clone', '--branch', $branch, $Repo.Url, $targetPath) -WorkingDirectory $Config.TargetRoot -Label "git clone $($Repo.Name)"
+    $null = Invoke-Checked -FilePath 'git' -ArgumentList @('clone', '--branch', $branch, $Repo.Url, $targetPath) -WorkingDirectory $Config.TargetRoot -Label "git clone $($Repo.Name)"
 
-    if ($Repo.HasSubmodules) {
+    if ($Repo.ContainsKey('HasSubmodules') -and $Repo.HasSubmodules) {
         Update-Submodules -Config $Config -Repo $Repo
     }
 
@@ -966,7 +966,7 @@ function Update-Submodules {
 
     Write-Host "Updating submodules for $($Repo.Name)"
     Write-Log -Config $Config -Message "Submodule update start: $($Repo.Name)"
-    Invoke-Checked -FilePath 'git' -ArgumentList @('-C', $targetPath, 'submodule', 'update', '--init', '--recursive') -WorkingDirectory $Config.TargetRoot -Label "git submodule update $($Repo.Name)"
+    $null = Invoke-Checked -FilePath 'git' -ArgumentList @('-C', $targetPath, 'submodule', 'update', '--init', '--recursive') -WorkingDirectory $Config.TargetRoot -Label "git submodule update $($Repo.Name)"
     Write-Log -Config $Config -Message "Submodule update complete: $($Repo.Name)"
 }
 
@@ -1003,7 +1003,7 @@ function Sync-Repo {
     $null = Invoke-Checked -FilePath 'git' -ArgumentList @('-C', $path, 'checkout', $branch) -WorkingDirectory $Config.TargetRoot -Label "git checkout $($Repo.Name)"
     $null = Invoke-Checked -FilePath 'git' -ArgumentList @('-C', $path, 'pull', '--ff-only', 'origin', $branch) -WorkingDirectory $Config.TargetRoot -Label "git pull $($Repo.Name)"
 
-    if ($Repo.HasSubmodules) {
+    if ($Repo.ContainsKey('HasSubmodules') -and $Repo.HasSubmodules) {
         Update-Submodules -Config $Config -Repo $Repo
     }
 
