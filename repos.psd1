@@ -1,5 +1,6 @@
 @{
     TargetRoot = 'C:\prj\p2p\eMule\eMulebb'
+    AnalysisRoot = 'C:\prj\p2p\eMule\analysis'
     LogFileName = 'eMulebb-setup.log'
     Repos = @(
         @{
@@ -10,12 +11,6 @@
             Url                = 'https://github.com/itlezy/eMule-build.git'
             BranchMode         = 'Pinned'
             Branch             = 'v0.60d-build-clean'
-            ExpectedBranches   = @(
-                'v0.60d-build-clean'
-                'v0.60d-bugfix-clean'
-                'v0.60d-broadband-clean'
-                'v0.60d-experimental-clean'
-            )
             HasSubmodules      = $true
             SupportsInnerSetup = $true
             InnerSetupMode     = 'WorkspacePs1'
@@ -28,12 +23,6 @@
             Url                = 'https://github.com/itlezy/eMule-build.git'
             BranchMode         = 'Pinned'
             Branch             = 'v0.72a-build-clean'
-            ExpectedBranches   = @(
-                'v0.72a-build-clean'
-                'v0.72a-bugfix-clean'
-                'v0.72a-broadband-clean'
-                'v0.72a-experimental-clean'
-            )
             HasSubmodules      = $true
             SupportsInnerSetup = $true
             InnerSetupMode     = 'WorkspacePs1'
@@ -62,6 +51,40 @@
             HasSubmodules      = $false
             SupportsInnerSetup = $false
             InnerSetupMode     = $null
+        }
+    )
+    AnalysisRepos = @(
+        @{
+            Name          = 'emuleai'
+            Path          = 'emuleai'
+            Url           = 'https://github.com/eMuleAI/eMuleAI.git'
+            BranchMode    = 'Pinned'
+            Branch        = 'master'
+            CompareSubdir = 'srchybrid'
+        }
+        @{
+            Name          = 'community-0.60'
+            Path          = 'community-0.60'
+            Url           = 'https://github.com/irwir/eMule.git'
+            BranchMode    = 'Pinned'
+            Branch        = 'v0.60d'
+            CompareSubdir = 'srchybrid'
+        }
+        @{
+            Name          = 'community-0.72'
+            Path          = 'community-0.72'
+            Url           = 'https://github.com/irwir/eMule.git'
+            BranchMode    = 'Pinned'
+            Branch        = 'v0.72a'
+            CompareSubdir = 'srchybrid'
+        }
+        @{
+            Name          = 'mods-archive'
+            Path          = 'mods-archive'
+            Url           = 'https://github.com/itlezy/eMule-mods-archive.git'
+            BranchMode    = 'Default'
+            Branch        = $null
+            CompareSubdir = $null
         }
     )
 }

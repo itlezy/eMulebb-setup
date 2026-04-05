@@ -1,8 +1,11 @@
 [CmdletBinding()]
 param(
     [Parameter(Position = 0)]
-    [ValidateSet('init', 'sync', 'status', 'validate', 'materialize', 'ensure-path')]
+    [ValidateSet('init', 'sync', 'status', 'validate', 'materialize', 'ensure-path', 'compare')]
     [string]$Command,
+
+    [Parameter(Position = 1)]
+    [string]$CompareKey,
 
     [ValidateSet('None', 'User')]
     [string]$Persist = 'None'
@@ -24,6 +27,29 @@ function Get-ScriptRoot {
 function Import-Config {
     $configPath = Join-Path (Get-ScriptRoot) 'repos.psd1'
     return Import-PowerShellDataFile -Path $configPath
+}
+
+function Get-AllRepos {
+    param([Parameter(Mandatory)][hashtable]$Config)
+
+    $repos = @()
+    if ($Config.ContainsKey('Repos')) {
+        $repos += @($Config.Repos)
+    }
+
+    if ($Config.ContainsKey('AnalysisRepos')) {
+        $repos += @($Config.AnalysisRepos | ForEach-Object {
+                $copy = @{}
+                foreach ($key in $_.Keys) {
+                    $copy[$key] = $_[$key]
+                }
+
+                $copy['RootKey'] = 'AnalysisRoot'
+                $copy
+            })
+    }
+
+    return $repos
 }
 
 function Ensure-Directory {
@@ -244,7 +270,7 @@ function Get-ResolvedBranch {
     )
 
     if ($Repo.BranchMode -eq 'Pinned') {
-        return [string]$Repo.Branch
+        return Normalize-BranchName -Branch ([string]$Repo.Branch)
     }
 
     $repoId = Get-RepoOwnerAndName -Url $Repo.Url
@@ -260,7 +286,7 @@ function Get-ResolvedBranch {
     }
 
     Write-Log -Config $Config -Message "Resolved default branch for $($Repo.Name): $branch"
-    return $branch
+    return (Normalize-BranchName -Branch $branch)
 }
 
 function Invoke-Git {
@@ -283,7 +309,12 @@ function Get-RepoPath {
         [Parameter(Mandatory)][hashtable]$Repo
     )
 
-    return Join-Path $Config.TargetRoot $Repo.Path
+    $rootKey = if ($Repo.ContainsKey('RootKey') -and -not [string]::IsNullOrWhiteSpace([string]$Repo.RootKey)) { [string]$Repo.RootKey } else { 'TargetRoot' }
+    if (-not $Config.ContainsKey($rootKey)) {
+        throw "Missing config root '$rootKey' for repo $($Repo.Name)."
+    }
+
+    return Join-Path $Config[$rootKey] $Repo.Path
 }
 
 function Get-RepoByName {
@@ -292,7 +323,54 @@ function Get-RepoByName {
         [Parameter(Mandatory)][string]$Name
     )
 
-    return @($Config.Repos | Where-Object { $_.Name -eq $Name } | Select-Object -First 1)[0]
+    return @(Get-AllRepos -Config $Config | Where-Object { $_.Name -eq $Name } | Select-Object -First 1)[0]
+}
+
+function Get-AnalysisRepos {
+    param([Parameter(Mandatory)][hashtable]$Config)
+
+    return @(Get-AllRepos -Config $Config | Where-Object { $_.ContainsKey('RootKey') -and $_.RootKey -eq 'AnalysisRoot' })
+}
+
+function Get-AnalysisCompareRoot {
+    param(
+        [Parameter(Mandatory)][hashtable]$Config,
+        [Parameter(Mandatory)][hashtable]$Repo
+    )
+
+    $repoPath = Get-RepoPath -Config $Config -Repo $Repo
+    $compareSubdir = if ($Repo.ContainsKey('CompareSubdir')) { [string]$Repo.CompareSubdir } else { '' }
+    if ([string]::IsNullOrWhiteSpace($compareSubdir)) {
+        return $repoPath
+    }
+
+    return Join-Path $repoPath $compareSubdir
+}
+
+function Get-LocalVariantCompareTargets {
+    param([Parameter(Mandatory)][hashtable]$Config)
+
+    return @(
+        [pscustomobject]@{ Name = 'local-060-build'; Path = (Join-Path $Config.TargetRoot 'eMule-build-v0.60\eMule-v0.60d-build-clean\srchybrid') }
+        [pscustomobject]@{ Name = 'local-060-bugfix'; Path = (Join-Path $Config.TargetRoot 'eMule-build-v0.60\eMule-v0.60d-bugfix-clean\srchybrid') }
+        [pscustomobject]@{ Name = 'local-060-broadband'; Path = (Join-Path $Config.TargetRoot 'eMule-build-v0.60\eMule-v0.60d-broadband-clean\srchybrid') }
+        [pscustomobject]@{ Name = 'local-060-experimental'; Path = (Join-Path $Config.TargetRoot 'eMule-build-v0.60\eMule-v0.60d-experimental-clean\srchybrid') }
+        [pscustomobject]@{ Name = 'local-072-build'; Path = (Join-Path $Config.TargetRoot 'eMule-build-v0.72\eMule-v0.72a-build-clean\srchybrid') }
+        [pscustomobject]@{ Name = 'local-072-bugfix'; Path = (Join-Path $Config.TargetRoot 'eMule-build-v0.72\eMule-v0.72a-bugfix-clean\srchybrid') }
+        [pscustomobject]@{ Name = 'local-072-broadband'; Path = (Join-Path $Config.TargetRoot 'eMule-build-v0.72\eMule-v0.72a-broadband-clean\srchybrid') }
+        [pscustomobject]@{ Name = 'local-072-experimental'; Path = (Join-Path $Config.TargetRoot 'eMule-build-v0.72\eMule-v0.72a-experimental-clean\srchybrid') }
+    )
+}
+
+function Get-LocalVariantTargetMap {
+    param([Parameter(Mandatory)][hashtable]$Config)
+
+    $map = @{}
+    foreach ($target in Get-LocalVariantCompareTargets -Config $Config) {
+        $map[$target.Name] = $target
+    }
+
+    return $map
 }
 
 function Get-ExpectedBranches {
@@ -303,6 +381,19 @@ function Get-ExpectedBranches {
     }
 
     return @([string]$Repo.Branch)
+}
+
+function Normalize-BranchName {
+    param([Parameter(Mandatory)][string]$Branch)
+
+    $normalized = $Branch.Trim()
+    foreach ($prefix in @('refs/heads/', 'heads/')) {
+        if ($normalized.StartsWith($prefix, [System.StringComparison]::OrdinalIgnoreCase)) {
+            return $normalized.Substring($prefix.Length)
+        }
+    }
+
+    return $normalized
 }
 
 function Get-LocalBranches {
@@ -355,6 +446,19 @@ function Get-ExpectedWorkspacePaths {
     return @($paths | Select-Object -Unique)
 }
 
+function Get-IgnoredRepoStatusPrefixes {
+    param(
+        [Parameter(Mandatory)][hashtable]$Config,
+        [Parameter(Mandatory)][hashtable]$Repo
+    )
+
+    if ($Repo.Role -ne 'BuildWorkspace') {
+        return @()
+    }
+
+    return @(Get-ExpectedWorkspacePaths -Config $Config -Repo $Repo)
+}
+
 function Get-MaterializationState {
     param(
         [Parameter(Mandatory)][hashtable]$Config,
@@ -362,7 +466,7 @@ function Get-MaterializationState {
     )
 
     $repoPath = Get-RepoPath -Config $Config -Repo $Repo
-    $expectedBranches = @(Get-ExpectedBranches -Repo $Repo)
+    $expectedBranches = @(Get-ExpectedBranches -Repo $Repo | ForEach-Object { Normalize-BranchName -Branch $_ })
     $localBranches = @(Get-LocalBranches -Path $repoPath)
     $branchHits = @($expectedBranches | Where-Object { $_ -in $localBranches })
 
@@ -401,9 +505,17 @@ function Ensure-ExpectedBranches {
     )
 
     $repoPath = Get-RepoPath -Config $Config -Repo $Repo
+    $localBranches = @(Get-LocalBranches -Path $repoPath)
     foreach ($branch in Get-ExpectedBranches -Repo $Repo) {
-        Write-Host "Ensuring branch $branch in $($Repo.Name)"
-        Invoke-Checked -FilePath 'git' -ArgumentList @('-C', $repoPath, 'fetch', 'origin', "refs/heads/$branch:refs/heads/$branch") -WorkingDirectory $Config.TargetRoot -Label "git fetch branch $($Repo.Name) $branch"
+        $normalizedBranch = Normalize-BranchName -Branch $branch
+        Write-Host "Ensuring branch $normalizedBranch in $($Repo.Name)"
+
+        Invoke-Checked -FilePath 'git' -ArgumentList @('-C', $repoPath, 'fetch', 'origin', "refs/heads/$normalizedBranch`:refs/remotes/origin/$normalizedBranch") -WorkingDirectory $Config.TargetRoot -Label "git fetch branch $($Repo.Name) $normalizedBranch"
+
+        if ($normalizedBranch -notin $localBranches) {
+            Invoke-Checked -FilePath 'git' -ArgumentList @('-C', $repoPath, 'branch', '--track', $normalizedBranch, "origin/$normalizedBranch") -WorkingDirectory $Config.TargetRoot -Label "git create branch $($Repo.Name) $normalizedBranch"
+            $localBranches += $normalizedBranch
+        }
     }
 }
 
@@ -506,7 +618,29 @@ function Get-RepoStatusInfo {
     $origin = (Invoke-Git -WorkingDirectory $path -Arguments @('remote', 'get-url', 'origin')).Output | Select-Object -First 1
     $currentBranch = (Invoke-Git -WorkingDirectory $path -Arguments @('branch', '--show-current')).Output | Select-Object -First 1
     $commit = (Invoke-Git -WorkingDirectory $path -Arguments @('rev-parse', 'HEAD')).Output | Select-Object -First 1
-    $dirtyOutput = (Invoke-Git -WorkingDirectory $path -Arguments @('status', '--porcelain')).Output
+    $ignoredPrefixes = @(
+        Get-IgnoredRepoStatusPrefixes -Config $Config -Repo $Repo |
+        ForEach-Object { (($_ -replace '\\', '/') -replace '/+$', '') }
+    )
+    $dirtyOutput = @(
+        (Invoke-Git -WorkingDirectory $path -Arguments @('status', '--porcelain')).Output |
+        Where-Object { -not [string]::IsNullOrWhiteSpace($_) } |
+        Where-Object {
+            $entry = $_
+            if ($entry.Length -lt 4) {
+                return $true
+            }
+
+            $statusPath = (($entry.Substring(3).Trim() -replace '\\', '/') -replace '/+$', '')
+            foreach ($prefix in $ignoredPrefixes) {
+                if ($statusPath -eq $prefix -or $statusPath.StartsWith("$prefix/")) {
+                    return $false
+                }
+            }
+
+            return $true
+        }
+    )
     $dirty = [bool]($dirtyOutput | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
 
     $problem = $null
@@ -552,6 +686,233 @@ function Assert-Prereqs {
     }
 }
 
+function Get-WinMergePath {
+    $candidates = @(
+        'C:\Program Files\WinMerge\WinMergeU.exe'
+        'C:\Program Files (x86)\WinMerge\WinMergeU.exe'
+    )
+
+    foreach ($candidate in $candidates) {
+        if (Test-Path -LiteralPath $candidate) {
+            return $candidate
+        }
+    }
+
+    $command = Get-Command 'WinMergeU.exe' -ErrorAction SilentlyContinue
+    if ($null -ne $command) {
+        return $command.Source
+    }
+
+    throw 'WinMergeU.exe was not found. Install WinMerge or add it to PATH.'
+}
+
+function Get-CompareRoot {
+    param(
+        [Parameter(Mandatory)][hashtable]$Config,
+        [Parameter(Mandatory)][string]$Name
+    )
+
+    $localTargets = Get-LocalVariantTargetMap -Config $Config
+    if ($localTargets.ContainsKey($Name)) {
+        return $localTargets[$Name].Path
+    }
+
+    $repo = Get-RepoByName -Config $Config -Name $Name
+    if ($null -eq $repo) {
+        throw "Unknown compare target: $Name"
+    }
+
+    return Get-AnalysisCompareRoot -Config $Config -Repo $repo
+}
+
+function New-ComparePreset {
+    param(
+        [Parameter(Mandatory)][string]$Key,
+        [Parameter(Mandatory)][string]$Label,
+        [Parameter(Mandatory)][string]$Category,
+        [Parameter(Mandatory)][string]$LeftName,
+        [Parameter(Mandatory)][string]$RightName
+    )
+
+    return [pscustomobject]@{
+        Key      = $Key
+        Label    = $Label
+        Category = $Category
+        LeftName = $LeftName
+        RightName = $RightName
+    }
+}
+
+function Get-ComparePresets {
+    $presets = New-Object System.Collections.Generic.List[object]
+
+    foreach ($right in @('local-060-build', 'local-060-bugfix', 'local-060-broadband', 'local-060-experimental', 'local-072-build', 'local-072-bugfix', 'local-072-broadband', 'local-072-experimental')) {
+        $presets.Add((New-ComparePreset -Key ("emuleai-vs-{0}" -f $right) -Label ("eMuleAI vs {0}" -f $right) -Category 'eMuleAI vs local' -LeftName 'emuleai' -RightName $right)) | Out-Null
+        $presets.Add((New-ComparePreset -Key ("community-060-vs-{0}" -f $right) -Label ("Community 0.60 vs {0}" -f $right) -Category 'Community 0.60 vs local' -LeftName 'community-0.60' -RightName $right)) | Out-Null
+        $presets.Add((New-ComparePreset -Key ("community-072-vs-{0}" -f $right) -Label ("Community 0.72 vs {0}" -f $right) -Category 'Community 0.72 vs local' -LeftName 'community-0.72' -RightName $right)) | Out-Null
+    }
+
+    foreach ($left in @('local-060-build', 'local-060-bugfix', 'local-060-broadband', 'local-060-experimental')) {
+        foreach ($right in @('local-072-build', 'local-072-bugfix', 'local-072-broadband', 'local-072-experimental')) {
+            $presets.Add((New-ComparePreset -Key ("{0}-vs-{1}" -f $left, $right) -Label ("{0} vs {1}" -f $left, $right) -Category 'Local 0.60 vs local 0.72' -LeftName $left -RightName $right)) | Out-Null
+        }
+    }
+
+    $presets.Add((New-ComparePreset -Key 'mods-archive-vs-local-060-build' -Label 'Mods archive vs local-060-build' -Category 'Mods Archive' -LeftName 'mods-archive' -RightName 'local-060-build')) | Out-Null
+    $presets.Add((New-ComparePreset -Key 'mods-archive-vs-local-072-build' -Label 'Mods archive vs local-072-build' -Category 'Mods Archive' -LeftName 'mods-archive' -RightName 'local-072-build')) | Out-Null
+
+    return $presets
+}
+
+function Invoke-ComparePreset {
+    param(
+        [Parameter(Mandatory)][hashtable]$Config,
+        [Parameter(Mandatory)]$Preset
+    )
+
+    $winMergePath = Get-WinMergePath
+    $leftPath = Get-CompareRoot -Config $Config -Name $Preset.LeftName
+    $rightPath = Get-CompareRoot -Config $Config -Name $Preset.RightName
+
+    foreach ($target in @(
+            [pscustomobject]@{ Name = $Preset.LeftName; Path = $leftPath }
+            [pscustomobject]@{ Name = $Preset.RightName; Path = $rightPath }
+        )) {
+        if (-not (Test-Path -LiteralPath $target.Path)) {
+            throw "Compare target path missing for $($target.Name): $($target.Path)"
+        }
+    }
+
+    Start-Process -FilePath $winMergePath -ArgumentList @($leftPath, $rightPath) | Out-Null
+}
+
+function Write-CompareLauncher {
+    param(
+        [Parameter(Mandatory)][string]$Path,
+        [Parameter(Mandatory)][string]$PresetKey,
+        [Parameter(Mandatory)][string]$WorkspaceScriptPath
+    )
+
+    $content = @(
+        '@ECHO OFF'
+        'pwsh -NoLogo -NoProfile -ExecutionPolicy Bypass -File "{0}" compare "{1}"' -f $WorkspaceScriptPath, $PresetKey
+    )
+
+    Set-Content -LiteralPath $Path -Value $content -Encoding ASCII
+}
+
+function Write-CompareMenuLauncher {
+    param(
+        [Parameter(Mandatory)][string]$Path,
+        [Parameter(Mandatory)][string]$WorkspaceScriptPath,
+        [string]$Key
+    )
+
+    $argumentSuffix = if ([string]::IsNullOrWhiteSpace($Key)) { '' } else { ' "{0}"' -f $Key }
+
+    $content = @(
+        '@ECHO OFF'
+        'pwsh -NoLogo -NoProfile -ExecutionPolicy Bypass -File "{0}" compare{1}' -f $WorkspaceScriptPath, $argumentSuffix
+    )
+
+    Set-Content -LiteralPath $Path -Value $content -Encoding ASCII
+}
+
+function Get-CompareOutputRoot {
+    param([Parameter(Mandatory)][hashtable]$Config)
+
+    return Join-Path $Config.AnalysisRoot 'compare'
+}
+
+function Write-CompareLaunchers {
+    param([Parameter(Mandatory)][hashtable]$Config)
+
+    $compareRoot = Get-CompareOutputRoot -Config $Config
+    $modsRoot = Join-Path $compareRoot 'mods-archive'
+    $workspaceScriptPath = Join-Path (Get-ScriptRoot) 'workspace.ps1'
+
+    Ensure-Directory -Path $Config.AnalysisRoot
+    Ensure-Directory -Path $compareRoot
+    Ensure-Directory -Path $modsRoot
+
+    Write-CompareMenuLauncher -Path (Join-Path $compareRoot 'open-compare-menu.cmd') -WorkspaceScriptPath $workspaceScriptPath
+    Write-CompareMenuLauncher -Path (Join-Path $modsRoot 'open-mods-archive-menu.cmd') -WorkspaceScriptPath $workspaceScriptPath -Key 'mods-archive'
+
+    foreach ($preset in Get-ComparePresets) {
+        $destinationRoot = if ($preset.Category -eq 'Mods Archive') { $modsRoot } else { $compareRoot }
+        Write-CompareLauncher -Path (Join-Path $destinationRoot ('{0}.cmd' -f $preset.Key)) -PresetKey $preset.Key -WorkspaceScriptPath $workspaceScriptPath
+    }
+}
+
+function Show-CompareMenu {
+    param(
+        [Parameter(Mandatory)][hashtable]$Config,
+        [string]$Category
+    )
+
+    $presets = @(Get-ComparePresets)
+    if (-not [string]::IsNullOrWhiteSpace($Category)) {
+        $presets = @($presets | Where-Object { $_.Category -eq $Category })
+    }
+
+    if ($presets.Count -eq 0) {
+        throw 'No compare presets are available.'
+    }
+
+    while ($true) {
+        Write-Host ''
+        Write-Host 'WinMerge compare presets'
+
+        $index = 1
+        foreach ($preset in $presets) {
+            Write-Host ('{0}. [{1}] {2}' -f $index, $preset.Category, $preset.Label)
+            $index++
+        }
+
+        Write-Host ('{0}. exit' -f $index)
+        Write-Host ''
+
+        $choice = Read-Host 'Select a compare preset'
+        if ($choice -eq [string]$index) {
+            return
+        }
+
+        $selected = 0
+        if ([int]::TryParse($choice, [ref]$selected) -and $selected -ge 1 -and $selected -lt $index) {
+            Invoke-ComparePreset -Config $Config -Preset $presets[$selected - 1]
+            return
+        }
+
+        Write-Warning ('Choose 1-{0}.' -f $index)
+    }
+}
+
+function Invoke-Compare {
+    param(
+        [Parameter(Mandatory)][hashtable]$Config,
+        [string]$Key
+    )
+
+    Write-CompareLaunchers -Config $Config
+
+    if ([string]::IsNullOrWhiteSpace($Key)) {
+        Show-CompareMenu -Config $Config
+        return
+    }
+
+    if ($Key -eq 'mods-archive') {
+        Show-CompareMenu -Config $Config -Category 'Mods Archive'
+        return
+    }
+
+    $preset = @(Get-ComparePresets | Where-Object { $_.Key -eq $Key } | Select-Object -First 1)[0]
+    if ($null -eq $preset) {
+        throw "Unknown compare preset: $Key"
+    }
+
+    Invoke-ComparePreset -Config $Config -Preset $preset
+}
+
 function Invoke-Checked {
     param(
         [Parameter(Mandatory)][string]$FilePath,
@@ -579,7 +940,7 @@ function Clone-Repo {
         return
     }
 
-    Ensure-Directory -Path $Config.TargetRoot
+    Ensure-Directory -Path (Split-Path -Parent $targetPath)
     Write-Host "Cloning $($Repo.Name) -> $targetPath"
     Write-Log -Config $Config -Message "Clone start: $($Repo.Name) [$branch]"
 
@@ -638,9 +999,9 @@ function Sync-Repo {
     Write-Host "Syncing $($Repo.Name)"
     Write-Log -Config $Config -Message "Sync start: $($Repo.Name) [$branch]"
 
-    Invoke-Checked -FilePath 'git' -ArgumentList @('-C', $path, 'fetch', '--all', '--prune') -WorkingDirectory $Config.TargetRoot -Label "git fetch $($Repo.Name)"
-    Invoke-Checked -FilePath 'git' -ArgumentList @('-C', $path, 'checkout', $branch) -WorkingDirectory $Config.TargetRoot -Label "git checkout $($Repo.Name)"
-    Invoke-Checked -FilePath 'git' -ArgumentList @('-C', $path, 'pull', '--ff-only', 'origin', $branch) -WorkingDirectory $Config.TargetRoot -Label "git pull $($Repo.Name)"
+    $null = Invoke-Checked -FilePath 'git' -ArgumentList @('-C', $path, 'fetch', '--all', '--prune') -WorkingDirectory $Config.TargetRoot -Label "git fetch $($Repo.Name)"
+    $null = Invoke-Checked -FilePath 'git' -ArgumentList @('-C', $path, 'checkout', $branch) -WorkingDirectory $Config.TargetRoot -Label "git checkout $($Repo.Name)"
+    $null = Invoke-Checked -FilePath 'git' -ArgumentList @('-C', $path, 'pull', '--ff-only', 'origin', $branch) -WorkingDirectory $Config.TargetRoot -Label "git pull $($Repo.Name)"
 
     if ($Repo.HasSubmodules) {
         Update-Submodules -Config $Config -Repo $Repo
@@ -653,7 +1014,7 @@ function Sync-Repo {
 function Show-Status {
     param([Parameter(Mandatory)][hashtable]$Config)
 
-    $rows = foreach ($repo in $Config.Repos) {
+    $rows = foreach ($repo in Get-AllRepos -Config $Config) {
         $info = Get-RepoStatusInfo -Config $Config -Repo $repo
         [pscustomobject]@{
             Name           = $info.Name
@@ -661,11 +1022,13 @@ function Show-Status {
             BranchExpected = $info.BranchExpected
             BranchCurrent  = $info.BranchCurrent
             Dirty          = $info.Dirty
-            Materialize    = if ($repo.Role -eq 'BuildWorkspace') {
+            Materialize    = if ($repo.ContainsKey('Role') -and $repo.Role -eq 'BuildWorkspace') {
                 $state = Get-MaterializationState -Config $Config -Repo $repo
                 '{0} ({1}/{2} branches, {3}/{4} paths)' -f $state.State, $state.PresentBranchCount, $state.ExpectedBranchCount, $state.PresentPathCount, $state.ExpectedPathCount
-            } elseif ($repo.Role -eq 'Tests') {
+            } elseif ($repo.ContainsKey('Role') -and $repo.Role -eq 'Tests') {
                 'clone-only'
+            } elseif ($repo.ContainsKey('RootKey') -and $repo.RootKey -eq 'AnalysisRoot') {
+                'analysis'
             } else {
                 'n/a'
             }
@@ -716,6 +1079,28 @@ function Validate-Workspace {
                 if (-not $requiredInfo.Healthy) {
                     $problems.Add("$($repo.Name): required repo $requiredName is not ready ($($requiredInfo.Problem))")
                 }
+            }
+        }
+    }
+
+    $analysisStarted = Test-Path -LiteralPath $Config.AnalysisRoot
+    if ($analysisStarted) {
+        foreach ($repo in Get-AnalysisRepos -Config $Config) {
+            $info = Get-RepoStatusInfo -Config $Config -Repo $repo
+            if (-not $info.Healthy) {
+                $problems.Add("$($repo.Name): $($info.Problem)")
+            }
+        }
+
+        try {
+            $null = Get-WinMergePath
+        } catch {
+            $problems.Add($_.Exception.Message)
+        }
+
+        foreach ($target in Get-LocalVariantCompareTargets -Config $Config) {
+            if (-not (Test-Path -LiteralPath $target.Path)) {
+                $problems.Add("compare target missing: $($target.Name) [$($target.Path)]")
             }
         }
     }
@@ -814,7 +1199,7 @@ function Invoke-Materialize {
     Assert-Prereqs -Config $Config -RequireCMake
     Ensure-Directory -Path $Config.TargetRoot
 
-    $orderedNames = @('eMule-build-v0.60', 'eMule-build-v0.72', 'eMule-build-tests')
+    $orderedNames = @('eMule-build-v0.60', 'eMule-build-v0.72', 'eMule-remote', 'eMule-build-tests')
     foreach ($name in $orderedNames) {
         $repo = Get-RepoByName -Config $Config -Name $name
         if ($null -eq $repo) {
@@ -849,6 +1234,16 @@ function Invoke-Materialize {
             Invoke-InnerSetup -Config $Config -Repo $repo
         }
     }
+
+    Ensure-Directory -Path $Config.AnalysisRoot
+    foreach ($repo in Get-AnalysisRepos -Config $Config) {
+        $result = Sync-Repo -Config $Config -Repo $repo
+        if ($result.Result -eq 'blocked') {
+            throw "Analysis repo $($repo.Name) is blocked: $($result.Reason)"
+        }
+    }
+
+    Write-CompareLaunchers -Config $Config
 }
 
 function Invoke-EnsurePath {
@@ -870,7 +1265,8 @@ function Show-Menu {
     Write-Host '5. materialize'
     Write-Host '6. ensure-path (session)'
     Write-Host '7. ensure-path (session + user)'
-    Write-Host '8. exit'
+    Write-Host '8. compare'
+    Write-Host '9. exit'
     Write-Host ''
 }
 
@@ -886,8 +1282,9 @@ function Resolve-InteractiveSelection {
             '5' { return @{ Command = 'materialize'; Persist = 'None' } }
             '6' { return @{ Command = 'ensure-path'; Persist = 'None' } }
             '7' { return @{ Command = 'ensure-path'; Persist = 'User' } }
-            '8' { return @{ Command = 'exit'; Persist = 'None' } }
-            default { Write-Warning 'Choose 1-8.' }
+            '8' { return @{ Command = 'compare'; Persist = 'None' } }
+            '9' { return @{ Command = 'exit'; Persist = 'None' } }
+            default { Write-Warning 'Choose 1-9.' }
         }
     }
 }
@@ -911,5 +1308,6 @@ switch ($Command) {
     'validate' { Validate-Workspace -Config $config }
     'materialize' { Invoke-Materialize -Config $config }
     'ensure-path' { Invoke-EnsurePath -Config $config }
+    'compare' { Invoke-Compare -Config $config -Key $CompareKey }
     default { throw "Unsupported command: $Command" }
 }
