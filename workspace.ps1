@@ -13,6 +13,7 @@ param(
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
+$script:BuildWorkspaceManifestCache = @{}
 
 function Assert-PowerShell7 {
     if ($PSVersionTable.PSVersion.Major -lt 7) {
@@ -347,19 +348,70 @@ function Get-AnalysisCompareRoot {
     return Join-Path $repoPath $compareSubdir
 }
 
+function Get-BuildWorkspaceManifest {
+    param(
+        [Parameter(Mandatory)][hashtable]$Config,
+        [Parameter(Mandatory)][hashtable]$Repo
+    )
+
+    $repoPath = Get-RepoPath -Config $Config -Repo $Repo
+    if ($script:BuildWorkspaceManifestCache.ContainsKey($repoPath)) {
+        return $script:BuildWorkspaceManifestCache[$repoPath]
+    }
+
+    $depsPath = Join-Path $repoPath 'deps.psd1'
+    if (-not (Test-Path -LiteralPath $depsPath)) {
+        return $null
+    }
+
+    try {
+        $manifest = Import-PowerShellDataFile -Path $depsPath
+    } catch {
+        return $null
+    }
+
+    $script:BuildWorkspaceManifestCache[$repoPath] = $manifest
+    return $manifest
+}
+
+function Get-SeriesCompareToken {
+    param([Parameter(Mandatory)][string]$Series)
+
+    $digits = [regex]::Matches($Series, '\d+') | ForEach-Object { $_.Value }
+    if ($digits.Count -ge 2) {
+        return ($digits[0] + $digits[1]).PadLeft(3, '0')
+    }
+
+    return (($Series -replace '[^0-9]', '')).PadLeft(3, '0')
+}
+
 function Get-LocalVariantCompareTargets {
     param([Parameter(Mandatory)][hashtable]$Config)
 
-    return @(
-        [pscustomobject]@{ Name = 'local-060-build'; Path = (Join-Path $Config.TargetRoot 'eMule-build-v0.60\eMule-v0.60d-build-clean\srchybrid') }
-        [pscustomobject]@{ Name = 'local-060-bugfix'; Path = (Join-Path $Config.TargetRoot 'eMule-build-v0.60\eMule-v0.60d-bugfix-clean\srchybrid') }
-        [pscustomobject]@{ Name = 'local-060-broadband'; Path = (Join-Path $Config.TargetRoot 'eMule-build-v0.60\eMule-v0.60d-broadband-clean\srchybrid') }
-        [pscustomobject]@{ Name = 'local-060-experimental'; Path = (Join-Path $Config.TargetRoot 'eMule-build-v0.60\eMule-v0.60d-experimental-clean\srchybrid') }
-        [pscustomobject]@{ Name = 'local-072-build'; Path = (Join-Path $Config.TargetRoot 'eMule-build-v0.72\eMule-v0.72a-build-clean\srchybrid') }
-        [pscustomobject]@{ Name = 'local-072-bugfix'; Path = (Join-Path $Config.TargetRoot 'eMule-build-v0.72\eMule-v0.72a-bugfix-clean\srchybrid') }
-        [pscustomobject]@{ Name = 'local-072-broadband'; Path = (Join-Path $Config.TargetRoot 'eMule-build-v0.72\eMule-v0.72a-broadband-clean\srchybrid') }
-        [pscustomobject]@{ Name = 'local-072-experimental'; Path = (Join-Path $Config.TargetRoot 'eMule-build-v0.72\eMule-v0.72a-experimental-clean\srchybrid') }
-    )
+    $targets = [System.Collections.Generic.List[object]]::new()
+    foreach ($repo in @($Config.Repos | Where-Object { $_.Role -eq 'BuildWorkspace' })) {
+        $manifest = Get-BuildWorkspaceManifest -Config $Config -Repo $repo
+        if ($null -eq $manifest -or -not $manifest.ContainsKey('Workspace') -or -not $manifest.Workspace.ContainsKey('AppRepo')) {
+            continue
+        }
+
+        $appRepo = $manifest.Workspace.AppRepo
+        $compareSubdir = if ($appRepo.ContainsKey('CompareSubdir')) { [string]$appRepo.CompareSubdir } else { '' }
+        $prefix = 'local-{0}' -f (Get-SeriesCompareToken -Series ([string]$repo.Series))
+        foreach ($variant in @($appRepo.Variants)) {
+            $variantPath = Join-Path (Get-RepoPath -Config $Config -Repo $repo) ([string]$variant.Path)
+            $comparePath = if ([string]::IsNullOrWhiteSpace($compareSubdir)) { $variantPath } else { Join-Path $variantPath $compareSubdir }
+            $targets.Add([pscustomobject]@{
+                    Name = ('{0}-{1}' -f $prefix, ([string]$variant.Name))
+                    Path = $comparePath
+                    Series = [string]$repo.Series
+                    Variant = [string]$variant.Name
+                    RepoName = [string]$repo.Name
+                }) | Out-Null
+        }
+    }
+
+    return @($targets)
 }
 
 function Get-LocalVariantTargetMap {
@@ -746,22 +798,31 @@ function New-ComparePreset {
 }
 
 function Get-ComparePresets {
-    $presets = New-Object System.Collections.Generic.List[object]
+    param([Parameter(Mandatory)][hashtable]$Config)
 
-    foreach ($right in @('local-060-build', 'local-060-bugfix', 'local-060-broadband', 'local-060-experimental', 'local-072-build', 'local-072-bugfix', 'local-072-broadband', 'local-072-experimental')) {
-        $presets.Add((New-ComparePreset -Key ("emuleai-vs-{0}" -f $right) -Label ("eMuleAI vs {0}" -f $right) -Category 'eMuleAI vs local' -LeftName 'emuleai' -RightName $right)) | Out-Null
-        $presets.Add((New-ComparePreset -Key ("community-060-vs-{0}" -f $right) -Label ("Community 0.60 vs {0}" -f $right) -Category 'Community 0.60 vs local' -LeftName 'community-0.60' -RightName $right)) | Out-Null
-        $presets.Add((New-ComparePreset -Key ("community-072-vs-{0}" -f $right) -Label ("Community 0.72 vs {0}" -f $right) -Category 'Community 0.72 vs local' -LeftName 'community-0.72' -RightName $right)) | Out-Null
+    $presets = New-Object System.Collections.Generic.List[object]
+    $localTargets = @(Get-LocalVariantCompareTargets -Config $Config | Sort-Object Name)
+    $local060Targets = @($localTargets | Where-Object { $_.Name -like 'local-060-*' })
+    $local072Targets = @($localTargets | Where-Object { $_.Name -like 'local-072-*' })
+
+    foreach ($right in $localTargets) {
+        $presets.Add((New-ComparePreset -Key ("emuleai-vs-{0}" -f $right.Name) -Label ("eMuleAI vs {0}" -f $right.Name) -Category 'eMuleAI vs local' -LeftName 'emuleai' -RightName $right.Name)) | Out-Null
+        $presets.Add((New-ComparePreset -Key ("community-060-vs-{0}" -f $right.Name) -Label ("Community 0.60 vs {0}" -f $right.Name) -Category 'Community 0.60 vs local' -LeftName 'community-0.60' -RightName $right.Name)) | Out-Null
+        $presets.Add((New-ComparePreset -Key ("community-072-vs-{0}" -f $right.Name) -Label ("Community 0.72 vs {0}" -f $right.Name) -Category 'Community 0.72 vs local' -LeftName 'community-0.72' -RightName $right.Name)) | Out-Null
     }
 
-    foreach ($left in @('local-060-build', 'local-060-bugfix', 'local-060-broadband', 'local-060-experimental')) {
-        foreach ($right in @('local-072-build', 'local-072-bugfix', 'local-072-broadband', 'local-072-experimental')) {
-            $presets.Add((New-ComparePreset -Key ("{0}-vs-{1}" -f $left, $right) -Label ("{0} vs {1}" -f $left, $right) -Category 'Local 0.60 vs local 0.72' -LeftName $left -RightName $right)) | Out-Null
+    foreach ($left in $local060Targets) {
+        foreach ($right in $local072Targets) {
+            $presets.Add((New-ComparePreset -Key ("{0}-vs-{1}" -f $left.Name, $right.Name) -Label ("{0} vs {1}" -f $left.Name, $right.Name) -Category 'Local 0.60 vs local 0.72' -LeftName $left.Name -RightName $right.Name)) | Out-Null
         }
     }
 
-    $presets.Add((New-ComparePreset -Key 'mods-archive-vs-local-060-build' -Label 'Mods archive vs local-060-build' -Category 'Mods Archive' -LeftName 'mods-archive' -RightName 'local-060-build')) | Out-Null
-    $presets.Add((New-ComparePreset -Key 'mods-archive-vs-local-072-build' -Label 'Mods archive vs local-072-build' -Category 'Mods Archive' -LeftName 'mods-archive' -RightName 'local-072-build')) | Out-Null
+    if ($local060Targets.Count -gt 0) {
+        $presets.Add((New-ComparePreset -Key ('mods-archive-vs-{0}' -f $local060Targets[0].Name) -Label ('Mods archive vs {0}' -f $local060Targets[0].Name) -Category 'Mods Archive' -LeftName 'mods-archive' -RightName $local060Targets[0].Name)) | Out-Null
+    }
+    if ($local072Targets.Count -gt 0) {
+        $presets.Add((New-ComparePreset -Key ('mods-archive-vs-{0}' -f $local072Targets[0].Name) -Label ('Mods archive vs {0}' -f $local072Targets[0].Name) -Category 'Mods Archive' -LeftName 'mods-archive' -RightName $local072Targets[0].Name)) | Out-Null
+    }
 
     return $presets
 }
@@ -840,7 +901,7 @@ function Write-CompareLaunchers {
     Write-CompareMenuLauncher -Path (Join-Path $compareRoot 'open-compare-menu.cmd') -WorkspaceScriptPath $workspaceScriptPath
     Write-CompareMenuLauncher -Path (Join-Path $modsRoot 'open-mods-archive-menu.cmd') -WorkspaceScriptPath $workspaceScriptPath -Key 'mods-archive'
 
-    foreach ($preset in Get-ComparePresets) {
+    foreach ($preset in Get-ComparePresets -Config $Config) {
         $destinationRoot = if ($preset.Category -eq 'Mods Archive') { $modsRoot } else { $compareRoot }
         Write-CompareLauncher -Path (Join-Path $destinationRoot ('{0}.cmd' -f $preset.Key)) -PresetKey $preset.Key -WorkspaceScriptPath $workspaceScriptPath
     }
@@ -852,7 +913,7 @@ function Show-CompareMenu {
         [string]$Category
     )
 
-    $presets = @(Get-ComparePresets)
+    $presets = @(Get-ComparePresets -Config $Config)
     if (-not [string]::IsNullOrWhiteSpace($Category)) {
         $presets = @($presets | Where-Object { $_.Category -eq $Category })
     }
@@ -907,7 +968,7 @@ function Invoke-Compare {
         return
     }
 
-    $preset = @(Get-ComparePresets | Where-Object { $_.Key -eq $Key } | Select-Object -First 1)[0]
+    $preset = @(Get-ComparePresets -Config $Config | Where-Object { $_.Key -eq $Key } | Select-Object -First 1)[0]
     if ($null -eq $preset) {
         throw "Unknown compare preset: $Key"
     }
