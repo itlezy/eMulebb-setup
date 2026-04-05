@@ -1,7 +1,7 @@
 [CmdletBinding()]
 param(
     [Parameter(Position = 0)]
-    [ValidateSet('init', 'sync', 'status', 'validate', 'materialize', 'ensure-path', 'compare')]
+    [ValidateSet('init', 'sync', 'status', 'validate', 'validate-full', 'materialize', 'ensure-path', 'compare')]
     [string]$Command,
 
     [Parameter(Position = 1)]
@@ -522,7 +522,8 @@ function Ensure-ExpectedBranches {
 function Invoke-InnerValidate {
     param(
         [Parameter(Mandatory)][hashtable]$Config,
-        [Parameter(Mandatory)][hashtable]$Repo
+        [Parameter(Mandatory)][hashtable]$Repo,
+        [switch]$Full
     )
 
     $path = Get-RepoPath -Config $Config -Repo $Repo
@@ -531,7 +532,8 @@ function Invoke-InnerValidate {
         throw "Inner validate entrypoint not found: $workspacePs1"
     }
 
-    Invoke-Checked -FilePath 'pwsh' -ArgumentList @('-NoLogo', '-NoProfile', '-File', $workspacePs1, 'validate') -WorkingDirectory $path -Label "inner validate $($Repo.Name)"
+    $innerCommand = if ($Full) { 'validate-full' } else { 'validate' }
+    $null = Invoke-Checked -FilePath 'pwsh' -ArgumentList @('-NoLogo', '-NoProfile', '-File', $workspacePs1, $innerCommand) -WorkingDirectory $path -Label "inner validate $($Repo.Name)"
 }
 
 function Assert-RepoHealthyForMaterialize {
@@ -1041,7 +1043,10 @@ function Show-Status {
 }
 
 function Validate-Workspace {
-    param([Parameter(Mandatory)][hashtable]$Config)
+    param(
+        [Parameter(Mandatory)][hashtable]$Config,
+        [switch]$Full
+    )
 
     Assert-Prereqs -Config $Config -RequireCMake
 
@@ -1062,7 +1067,7 @@ function Validate-Workspace {
 
             if ($state.State -eq 'materialized') {
                 try {
-                    Invoke-InnerValidate -Config $Config -Repo $repo
+                    Invoke-InnerValidate -Config $Config -Repo $repo -Full:$Full
                 } catch {
                     $problems.Add("$($repo.Name): $($_.Exception.Message)")
                 }
@@ -1260,13 +1265,14 @@ function Show-Menu {
     Write-Host 'eMulebb setup'
     Write-Host '1. status'
     Write-Host '2. validate'
-    Write-Host '3. init'
-    Write-Host '4. sync'
-    Write-Host '5. materialize'
-    Write-Host '6. ensure-path (session)'
-    Write-Host '7. ensure-path (session + user)'
-    Write-Host '8. compare'
-    Write-Host '9. exit'
+    Write-Host '3. validate-full'
+    Write-Host '4. init'
+    Write-Host '5. sync'
+    Write-Host '6. materialize'
+    Write-Host '7. ensure-path (session)'
+    Write-Host '8. ensure-path (session + user)'
+    Write-Host '9. compare'
+    Write-Host '10. exit'
     Write-Host ''
 }
 
@@ -1277,14 +1283,15 @@ function Resolve-InteractiveSelection {
         switch ($choice) {
             '1' { return @{ Command = 'status'; Persist = 'None' } }
             '2' { return @{ Command = 'validate'; Persist = 'None' } }
-            '3' { return @{ Command = 'init'; Persist = 'None' } }
-            '4' { return @{ Command = 'sync'; Persist = 'None' } }
-            '5' { return @{ Command = 'materialize'; Persist = 'None' } }
-            '6' { return @{ Command = 'ensure-path'; Persist = 'None' } }
-            '7' { return @{ Command = 'ensure-path'; Persist = 'User' } }
-            '8' { return @{ Command = 'compare'; Persist = 'None' } }
-            '9' { return @{ Command = 'exit'; Persist = 'None' } }
-            default { Write-Warning 'Choose 1-9.' }
+            '3' { return @{ Command = 'validate-full'; Persist = 'None' } }
+            '4' { return @{ Command = 'init'; Persist = 'None' } }
+            '5' { return @{ Command = 'sync'; Persist = 'None' } }
+            '6' { return @{ Command = 'materialize'; Persist = 'None' } }
+            '7' { return @{ Command = 'ensure-path'; Persist = 'None' } }
+            '8' { return @{ Command = 'ensure-path'; Persist = 'User' } }
+            '9' { return @{ Command = 'compare'; Persist = 'None' } }
+            '10' { return @{ Command = 'exit'; Persist = 'None' } }
+            default { Write-Warning 'Choose 1-10.' }
         }
     }
 }
@@ -1306,6 +1313,7 @@ switch ($Command) {
     'sync' { Invoke-SyncAll -Config $config }
     'status' { Show-Status -Config $config }
     'validate' { Validate-Workspace -Config $config }
+    'validate-full' { Validate-Workspace -Config $config -Full }
     'materialize' { Invoke-Materialize -Config $config }
     'ensure-path' { Invoke-EnsurePath -Config $config }
     'compare' { Invoke-Compare -Config $config -Key $CompareKey }

@@ -38,6 +38,7 @@ pwsh -File .\workspace.ps1 init
 pwsh -File .\workspace.ps1 sync
 pwsh -File .\workspace.ps1 status
 pwsh -File .\workspace.ps1 validate
+pwsh -File .\workspace.ps1 validate-full
 pwsh -File .\workspace.ps1 validate -Persist User
 pwsh -File .\workspace.ps1 materialize
 pwsh -File .\workspace.ps1 compare
@@ -51,6 +52,8 @@ pwsh -File .\workspace.ps1 compare emuleai-vs-local-060-build
 - `sync` updates clean repos only. Dirty repos are reported and left untouched.
 - `materialize` runs in order: `eMule-build-v0.60`, `eMule-build-v0.72`, `eMule-remote`, then `eMule-build-tests`.
 - `materialize` also provisions `C:\prj\p2p\eMule\analysis` with `emuleai`, `community-0.60`, `community-0.72`, and `mods-archive`.
+- `validate` is the default structural validation: repo health, materialization, analysis clones, compare targets, and inner workspace readiness.
+- `validate-full` is stricter and also requires inner build outputs to exist.
 - `compare` writes WinMerge launchers to `C:\prj\p2p\eMule\analysis\compare` and opens an interactive preset menu.
 - Each build repo now follows the same paradigm: one pinned workspace branch per series, pinned dependency inputs, and four materialized `eMule` app worktrees that track the current HEAD of their configured app branches.
 - `eMule-build-v0.60` is pinned to `v0.60d-build-clean`.
