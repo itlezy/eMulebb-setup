@@ -2,7 +2,7 @@
 [CmdletBinding()]
 param(
     [Parameter(Position = 0)]
-    [ValidateSet('init', 'materialize', 'status', 'validate', 'sync', 'ensure-path', 'compare', 'build-libs', 'build-app', 'build-tests', 'test', 'full')]
+    [ValidateSet('init', 'materialize', 'status', 'validate', 'sync', 'ensure-path', 'compare')]
     [string]$Command = 'status',
 
     [Parameter(Position = 1)]
@@ -257,61 +257,6 @@ function Get-RepoPath {
     )
 
     Join-Path $Root $Repo.RelativePath
-}
-
-function Get-BuildRepoPath {
-    param(
-        [Parameter(Mandatory = $true)]
-        [string]$Root,
-
-        [Parameter(Mandatory = $true)]
-        [hashtable]$Config
-    )
-
-    $buildRepo = @($Config.Repos | Where-Object { $_.Name -eq 'eMule-build' } | Select-Object -First 1)
-    if (-not $buildRepo) {
-        throw 'eMule-build repo configuration not found.'
-    }
-
-    Get-RepoPath -Root $Root -Repo $buildRepo
-}
-
-function Invoke-BuildRepoCommand {
-    param(
-        [Parameter(Mandatory = $true)]
-        [string]$Root,
-
-        [Parameter(Mandatory = $true)]
-        [hashtable]$Config,
-
-        [Parameter(Mandatory = $true)]
-        [string]$BuildCommand,
-
-        [string]$WorkspaceName
-    )
-
-    $buildRepoPath = Get-BuildRepoPath -Root $Root -Config $Config
-    $buildScriptPath = Join-Path $buildRepoPath 'workspace.ps1'
-    if (-not (Test-Path -LiteralPath $buildScriptPath -PathType Leaf)) {
-        throw "Build repo entrypoint not found: $buildScriptPath"
-    }
-
-    $arguments = @(
-        '-NoLogo'
-        '-NoProfile'
-        '-ExecutionPolicy'
-        'Bypass'
-        '-File'
-        $buildScriptPath
-        $BuildCommand
-        '-EmuleWorkspaceRoot'
-        $Root
-    )
-    if (-not [string]::IsNullOrWhiteSpace($WorkspaceName)) {
-        $arguments += @('-WorkspaceName', $WorkspaceName)
-    }
-
-    Invoke-Checked -FilePath 'pwsh' -ArgumentList $arguments
 }
 
 function Get-AllRepoConfigs {
@@ -755,24 +700,6 @@ function Ensure-RootLayout {
     }
 }
 
-function Write-WorkspaceBuildWrapper {
-    param(
-        [Parameter(Mandatory = $true)]
-        [string]$Root,
-
-        [Parameter(Mandatory = $true)]
-        [string]$WorkspaceName
-    )
-
-    $workspaceRoot = Get-WorkspaceRoot -Root $Root -WorkspaceName $WorkspaceName
-    $wrapperPath = Join-Path $workspaceRoot '23-build-emule-debug-incremental.cmd'
-    $content = @"
-@ECHO OFF
-pwsh -NoLogo -NoProfile -ExecutionPolicy Bypass -File "$Root\repos\eMule-build\workspace.ps1" build-app -EmuleWorkspaceRoot "$Root"
-"@
-    Set-Content -LiteralPath $wrapperPath -Value $content -Encoding ascii
-}
-
 function Ensure-AppBranches {
     param(
         [Parameter(Mandatory = $true)]
@@ -1089,7 +1016,6 @@ function Invoke-Init {
     Overlay-SeedArtifacts -Root $Root -Config $Config -SeedRoot $SeedRoot
     Write-WorkspaceProps -Root $Root -Config $Config
     Write-WorkspaceManifest -Root $Root -Config $Config -WorkspaceName $WorkspaceName
-    Write-WorkspaceBuildWrapper -Root $Root -WorkspaceName $WorkspaceName
     Write-CompareLaunchers -Root $Root -Config $Config
 }
 
@@ -1210,75 +1136,6 @@ function Remove-StaleGeneratedArtifacts {
     }
 }
 
-function Invoke-BuildLibs {
-    param(
-        [Parameter(Mandatory = $true)]
-        [string]$Root,
-
-        [Parameter(Mandatory = $true)]
-        [hashtable]$Config
-    )
-
-    Invoke-BuildRepoCommand -Root $Root -Config $Config -BuildCommand 'build-libs'
-}
-
-function Invoke-BuildApp {
-    param(
-        [Parameter(Mandatory = $true)]
-        [string]$Root,
-
-        [Parameter(Mandatory = $true)]
-        [hashtable]$Config
-    )
-
-    Invoke-BuildRepoCommand -Root $Root -Config $Config -BuildCommand 'build-app' -WorkspaceName $Config.DefaultWorkspaceName
-}
-
-function Invoke-BuildTests {
-    param(
-        [Parameter(Mandatory = $true)]
-        [string]$Root,
-
-        [Parameter(Mandatory = $true)]
-        [hashtable]$Config,
-
-        [Parameter(Mandatory = $true)]
-        [string]$WorkspaceName
-    )
-
-    Invoke-BuildRepoCommand -Root $Root -Config $Config -BuildCommand 'build-tests' -WorkspaceName $WorkspaceName
-}
-
-function Invoke-TestRun {
-    param(
-        [Parameter(Mandatory = $true)]
-        [string]$Root,
-
-        [Parameter(Mandatory = $true)]
-        [string]$WorkspaceName
-    )
-
-    Invoke-BuildRepoCommand -Root $Root -Config $Config -BuildCommand 'test' -WorkspaceName $WorkspaceName
-}
-
-function Invoke-Full {
-    param(
-        [Parameter(Mandatory = $true)]
-        [string]$Root,
-
-        [Parameter(Mandatory = $true)]
-        [hashtable]$Config,
-
-        [Parameter(Mandatory = $true)]
-        [string]$WorkspaceName,
-
-        [string]$SeedRoot
-    )
-
-    Invoke-Materialize -Root $Root -Config $Config -WorkspaceName $WorkspaceName -SeedRoot $SeedRoot
-    Invoke-BuildRepoCommand -Root $Root -Config $Config -BuildCommand 'full' -WorkspaceName $WorkspaceName
-}
-
 $config = Import-SetupConfig
 $resolvedRoot = Resolve-EmuleWorkspaceRoot -Config $config -OverrideRoot $EmuleWorkspaceRoot
 $resolvedWorkspaceName = Resolve-WorkspaceName -Config $config -OverrideName $WorkspaceName
@@ -1291,10 +1148,5 @@ switch ($Command) {
     'status' { Invoke-Status -Root $resolvedRoot -Config $config; break }
     'validate' { Invoke-Validate -Root $resolvedRoot -Config $config -WorkspaceName $resolvedWorkspaceName; break }
     'compare' { Invoke-Compare -Root $resolvedRoot -Config $config -Key $CompareKey; break }
-    'build-libs' { Invoke-BuildLibs -Root $resolvedRoot -Config $config; break }
-    'build-app' { Invoke-BuildApp -Root $resolvedRoot -Config $config; break }
-    'build-tests' { Invoke-BuildTests -Root $resolvedRoot -Config $config -WorkspaceName $resolvedWorkspaceName; break }
-    'test' { Invoke-TestRun -Root $resolvedRoot -WorkspaceName $resolvedWorkspaceName; break }
-    'full' { Invoke-Full -Root $resolvedRoot -Config $config -WorkspaceName $resolvedWorkspaceName -SeedRoot $ArtifactsSeedRoot; break }
     default { throw "Unsupported command '$Command'." }
 }
