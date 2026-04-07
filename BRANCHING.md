@@ -80,6 +80,37 @@ Normal practice:
 Direct commits to `main` should be reserved for very small administrative
 changes.
 
+## History Hygiene
+
+`main` should read like curated project history, not like a work log.
+
+Rules:
+
+- one `main` commit should represent one coherent outcome
+- do not push `WIP`, checkpoint, or debug commits to `main`
+- do not split one logical change into multiple follow-up `main` commits unless
+  the split is intentionally meaningful
+- do not mix unrelated behavior, docs, and hygiene work in one commit unless the
+  repo sweep is explicitly intentional
+
+Use a short-lived branch for any non-trivial change, then squash merge it back
+to `main`.
+
+Direct commits to `main` are acceptable only for very small changes such as:
+
+- tiny administrative updates
+- branch or tag housekeeping
+- trivial doc fixes
+- one-line metadata or policy corrections
+
+Even for direct `main` commits:
+
+- keep the commit single-purpose
+- avoid immediate follow-up correction commits for the same logical change
+
+If a change is only completing the previous unpushed commit, fold it in before
+pushing instead of stacking another `main` commit on top.
+
 ## Promotion Strategy
 
 Promotion flows from `main` to release branches.
