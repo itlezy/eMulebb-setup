@@ -59,6 +59,16 @@ pwsh -File .\workspace.ps1 compare -EmuleWorkspaceRoot <workspace-root>
 pwsh -File .\workspace.ps1 compare <preset-key> -EmuleWorkspaceRoot <workspace-root>
 ```
 
+Convenience dispatch into `repos\eMule-build\workspace.ps1`:
+
+```powershell
+pwsh -File .\workspace.ps1 build-libs  -EmuleWorkspaceRoot <workspace-root>
+pwsh -File .\workspace.ps1 build-app   -EmuleWorkspaceRoot <workspace-root>
+pwsh -File .\workspace.ps1 build-tests -EmuleWorkspaceRoot <workspace-root>
+pwsh -File .\workspace.ps1 test        -EmuleWorkspaceRoot <workspace-root>
+pwsh -File .\workspace.ps1 full        -EmuleWorkspaceRoot <workspace-root>
+```
+
 ## Notes
 
 - `EMULE_WORKSPACE_ROOT` may be provided with `-EmuleWorkspaceRoot` or the `EMULE_WORKSPACE_ROOT` environment variable.
@@ -66,6 +76,7 @@ pwsh -File .\workspace.ps1 compare <preset-key> -EmuleWorkspaceRoot <workspace-r
 - `materialize` also clones the comparison repos under `analysis` and regenerates the WinMerge launchers under `analysis\compare`.
 - The app repo is canonical under `repos\eMule`; active 0.72 series work is done in worktrees under `workspaces\v0.72a\app`.
 - `repos\eMule-build` owns the canonical build, test, coverage, and live-diff orchestration.
+- `eMulebb-setup` remains the front-door workspace helper; its build/test commands are thin passthrough dispatch into `repos\eMule-build\workspace.ps1`.
 - The tests repo is expected on `main`.
 - `materialize` actively manages only the canonical 0.72a app worktrees and removes legacy app worktrees from the workspace app directory.
 - `compare` launches WinMerge for built-in presets that compare `emuleai`, `community-0.60`, `community-0.72`, and `mods-archive` against the canonical local 0.72a worktrees.
