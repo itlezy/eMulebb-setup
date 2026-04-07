@@ -1,11 +1,18 @@
+#Requires -Version 7.2
 [CmdletBinding()]
 param(
     [Parameter(Position = 0)]
-    [ValidateSet('init', 'sync', 'status', 'validate', 'validate-full', 'materialize', 'ensure-path', 'compare')]
-    [string]$Command,
+    [ValidateSet('init', 'materialize', 'status', 'validate', 'sync', 'ensure-path', 'compare', 'build-libs', 'build-app', 'build-tests', 'test', 'full')]
+    [string]$Command = 'status',
 
     [Parameter(Position = 1)]
     [string]$CompareKey,
+
+    [string]$EmuleWorkspaceRoot,
+
+    [string]$WorkspaceName,
+
+    [string]$ArtifactsSeedRoot,
 
     [ValidateSet('None', 'User')]
     [string]$Persist = 'None'
@@ -13,333 +20,322 @@ param(
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
-$script:BuildWorkspaceManifestCache = @{}
-
-function Assert-PowerShell7 {
-    if ($PSVersionTable.PSVersion.Major -lt 7) {
-        throw 'This helper requires PowerShell 7 or later.'
-    }
-}
 
 function Get-ScriptRoot {
-    return Split-Path -Parent $PSCommandPath
+    Split-Path -Parent $PSCommandPath
 }
 
-function Import-Config {
-    $configPath = Join-Path (Get-ScriptRoot) 'repos.psd1'
-    return Import-PowerShellDataFile -Path $configPath
+function Import-SetupConfig {
+    Import-PowerShellDataFile -LiteralPath (Join-Path (Get-ScriptRoot) 'repos.psd1')
 }
 
-function Get-AllRepos {
-    param([Parameter(Mandatory)][hashtable]$Config)
+function Resolve-EmuleWorkspaceRoot {
+    param(
+        [Parameter(Mandatory = $true)]
+        [hashtable]$Config,
 
-    $repos = @()
-    if ($Config.ContainsKey('Repos')) {
-        $repos += @($Config.Repos)
+        [string]$OverrideRoot
+    )
+
+    $candidate = if (-not [string]::IsNullOrWhiteSpace($OverrideRoot)) {
+        $OverrideRoot
+    } elseif (-not [string]::IsNullOrWhiteSpace($env:EMULE_WORKSPACE_ROOT)) {
+        $env:EMULE_WORKSPACE_ROOT
+    } else {
+        $Config.DefaultEmuleWorkspaceRoot
     }
 
-    if ($Config.ContainsKey('AnalysisRepos')) {
-        $repos += @($Config.AnalysisRepos | ForEach-Object {
-                $copy = @{}
-                foreach ($key in $_.Keys) {
-                    $copy[$key] = $_[$key]
-                }
+    [System.IO.Path]::GetFullPath($candidate)
+}
 
-                $copy['RootKey'] = 'AnalysisRoot'
-                $copy
-            })
+function Resolve-WorkspaceName {
+    param(
+        [Parameter(Mandatory = $true)]
+        [hashtable]$Config,
+
+        [string]$OverrideName
+    )
+
+    if (-not [string]::IsNullOrWhiteSpace($OverrideName)) {
+        return $OverrideName
     }
 
-    return $repos
+    return $Config.DefaultWorkspaceName
+}
+
+function Get-WorkspaceRoot {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Root,
+
+        [Parameter(Mandatory = $true)]
+        [string]$WorkspaceName
+    )
+
+    Join-Path $Root ('workspaces\{0}' -f $WorkspaceName)
+}
+
+function Get-WorkspacePropsPath {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Root,
+
+        [Parameter(Mandatory = $true)]
+        [hashtable]$Config
+    )
+
+    Join-Path $Root $Config.WorkspacePropsFileName
 }
 
 function Ensure-Directory {
-    param([Parameter(Mandatory)][string]$Path)
-    if (-not (Test-Path -LiteralPath $Path)) {
-        New-Item -ItemType Directory -Path $Path -Force | Out-Null
+    param([Parameter(Mandatory = $true)][string]$Path)
+
+    if (-not (Test-Path -LiteralPath $Path -PathType Container)) {
+        $null = New-Item -ItemType Directory -Force -Path $Path
+    }
+}
+
+function Invoke-Checked {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$FilePath,
+
+        [Parameter(Mandatory = $true)]
+        [string[]]$ArgumentList,
+
+        [string]$WorkingDirectory = (Get-Location).Path
+    )
+
+    & $FilePath @ArgumentList
+    if ($LASTEXITCODE -ne 0) {
+        throw ("Command failed ({0} {1}) with exit code {2}" -f $FilePath, ($ArgumentList -join ' '), $LASTEXITCODE)
+    }
+}
+
+function Get-VsWherePath {
+    $cmd = Get-Command 'vswhere.exe' -ErrorAction SilentlyContinue | Select-Object -First 1
+    if ($cmd) {
+        return $cmd.Source
+    }
+
+    foreach ($base in @($env:ProgramFiles, ${env:ProgramFiles(x86)}) | Where-Object { $_ }) {
+        $candidate = Join-Path $base 'Microsoft Visual Studio\Installer\vswhere.exe'
+        if (Test-Path -LiteralPath $candidate -PathType Leaf) {
+            return $candidate
+        }
+    }
+
+    throw 'vswhere.exe not found.'
+}
+
+function Get-VsInstallPath {
+    $vsWhere = Get-VsWherePath
+    $installationPath = (& $vsWhere -latest -products * -requires Microsoft.Component.MSBuild -property installationPath | Select-Object -First 1).Trim()
+    if ([string]::IsNullOrWhiteSpace($installationPath)) {
+        throw 'Unable to resolve the active Visual Studio installation path.'
+    }
+
+    return $installationPath
+}
+
+function Get-MSBuildPath {
+    $cmd = Get-Command 'MSBuild.exe' -ErrorAction SilentlyContinue | Select-Object -First 1
+    if ($cmd) {
+        return $cmd.Source
+    }
+
+    $candidate = Join-Path (Get-VsInstallPath) 'MSBuild\Current\Bin\MSBuild.exe'
+    if (-not (Test-Path -LiteralPath $candidate -PathType Leaf)) {
+        throw 'MSBuild.exe not found.'
+    }
+
+    return $candidate
+}
+
+function Get-CMakePath {
+    $cmd = Get-Command 'cmake.exe' -ErrorAction SilentlyContinue | Select-Object -First 1
+    if ($cmd) {
+        return $cmd.Source
+    }
+
+    $candidate = Join-Path (Get-VsInstallPath) 'Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin\cmake.exe'
+    if (-not (Test-Path -LiteralPath $candidate -PathType Leaf)) {
+        throw 'cmake.exe not found.'
+    }
+
+    return $candidate
+}
+
+function Get-PerlPath {
+    $cmd = Get-Command 'perl.exe' -ErrorAction SilentlyContinue | Select-Object -First 1
+    if ($cmd) {
+        return $cmd.Source
+    }
+
+    foreach ($candidate in @(
+        'C:\Program Files\Git\usr\bin\perl.exe'
+        'C:\Program Files (x86)\Git\usr\bin\perl.exe'
+    )) {
+        if (Test-Path -LiteralPath $candidate -PathType Leaf) {
+            return $candidate
+        }
+    }
+
+    throw 'perl.exe not found.'
+}
+
+function Invoke-MSBuildProject {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$ProjectPath,
+
+        [Parameter(Mandatory = $true)]
+        [string]$Configuration,
+
+        [Parameter(Mandatory = $true)]
+        [string]$Platform,
+
+        [string[]]$ExtraProperties = @()
+    )
+
+    $msbuildPath = Get-MSBuildPath
+    $argumentList = @(
+        $ProjectPath
+        '/m'
+        '/nologo'
+        '/t:Build'
+        "/p:Configuration=$Configuration"
+        "/p:Platform=$Platform"
+    ) + $ExtraProperties
+
+    Invoke-Checked -FilePath $msbuildPath -ArgumentList $argumentList
+}
+
+function Invoke-RobocopyMirror {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$SourcePath,
+
+        [Parameter(Mandatory = $true)]
+        [string]$DestinationPath
+    )
+
+    Ensure-Directory -Path $DestinationPath
+    $null = & robocopy $SourcePath $DestinationPath /E /XO /R:1 /W:1 /NFL /NDL /NJH /NJS /XD .git .vs /XF .git
+    if ($LASTEXITCODE -gt 7) {
+        throw "robocopy failed for '$SourcePath' -> '$DestinationPath' with exit code $LASTEXITCODE."
     }
 }
 
 function Write-Log {
     param(
-        [Parameter(Mandatory)][hashtable]$Config,
-        [Parameter(Mandatory)][string]$Message
+        [Parameter(Mandatory = $true)]
+        [string]$Root,
+
+        [Parameter(Mandatory = $true)]
+        [hashtable]$Config,
+
+        [Parameter(Mandatory = $true)]
+        [string]$Message
     )
 
-    $targetRoot = $Config.TargetRoot
-    if (-not (Test-Path -LiteralPath $targetRoot)) {
+    if (-not (Test-Path -LiteralPath $Root -PathType Container)) {
         return
     }
 
-    $logPath = Join-Path $targetRoot $Config.LogFileName
-    $line = '[{0}] {1}' -f (Get-Date -Format 'yyyy-MM-dd HH:mm:ss'), $Message
-    Add-Content -LiteralPath $logPath -Value $line
-}
-
-function Get-RepoOwnerAndName {
-    param([Parameter(Mandatory)][string]$Url)
-
-    $match = [regex]::Match($Url, 'github\.com[/:](?<owner>[^/]+)/(?<name>[^/.]+)(?:\.git)?$')
-    if (-not $match.Success) {
-        throw "Unsupported GitHub URL format: $Url"
-    }
-
-    return @{
-        Owner = $match.Groups['owner'].Value
-        Name  = $match.Groups['name'].Value
-    }
-}
-
-function Split-PathEntries {
-    param([string]$PathValue)
-
-    if ([string]::IsNullOrWhiteSpace($PathValue)) {
-        return @()
-    }
-
-    return $PathValue.Split(';', [System.StringSplitOptions]::RemoveEmptyEntries) |
-        ForEach-Object { $_.Trim() } |
-        Where-Object { $_ }
-}
-
-function Test-PathEntryPresent {
-    param(
-        [Parameter(Mandatory)][string]$PathValue,
-        [Parameter(Mandatory)][string]$Directory
-    )
-
-    $normalizedTarget = $Directory.TrimEnd('\')
-    foreach ($entry in Split-PathEntries -PathValue $PathValue) {
-        if ($entry.TrimEnd('\') -ieq $normalizedTarget) {
-            return $true
-        }
-    }
-
-    return $false
-}
-
-function Add-DirectoryToProcessPath {
-    param([Parameter(Mandatory)][string]$Directory)
-
-    if (-not (Test-PathEntryPresent -PathValue $env:PATH -Directory $Directory)) {
-        $env:PATH = if ([string]::IsNullOrWhiteSpace($env:PATH)) { $Directory } else { '{0};{1}' -f $env:PATH, $Directory }
-    }
-}
-
-function Add-DirectoryToUserPath {
-    param([Parameter(Mandatory)][string]$Directory)
-
-    $current = [Environment]::GetEnvironmentVariable('Path', 'User')
-    if (-not (Test-PathEntryPresent -PathValue $current -Directory $Directory)) {
-        $updated = if ([string]::IsNullOrWhiteSpace($current)) { $Directory } else { '{0};{1}' -f $current.TrimEnd(';'), $Directory }
-        [Environment]::SetEnvironmentVariable('Path', $updated, 'User')
-    }
-}
-
-function Get-RequiredTools {
-    return @(
-        [pscustomobject]@{
-            Name          = 'pwsh'
-            Executable    = 'pwsh.exe'
-            CandidateDirs = @('C:\Program Files\PowerShell\7')
-        }
-        [pscustomobject]@{
-            Name          = 'git'
-            Executable    = 'git.exe'
-            CandidateDirs = @('C:\Program Files\Git\cmd')
-        }
-        [pscustomobject]@{
-            Name          = 'gh'
-            Executable    = 'gh.exe'
-            CandidateDirs = @('C:\Program Files\GitHub CLI')
-        }
-        [pscustomobject]@{
-            Name          = 'cmake'
-            Executable    = 'cmake.exe'
-            CandidateDirs = @(
-                'C:\Program Files\Microsoft Visual Studio\18\Professional\Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin'
-            )
-        }
-    )
-}
-
-function Resolve-ToolStatus {
-    param([Parameter(Mandatory)]$Tool)
-
-    $command = Get-Command $Tool.Name -ErrorAction SilentlyContinue
-    $foundOnPath = $null -ne $command
-    $resolvedPath = if ($foundOnPath) { $command.Source } else { $null }
-    $candidateDir = $null
-
-    if (-not $foundOnPath) {
-        foreach ($dir in $Tool.CandidateDirs) {
-            $candidateExe = Join-Path $dir $Tool.Executable
-            if (Test-Path -LiteralPath $candidateExe) {
-                $candidateDir = $dir
-                break
-            }
-        }
-    }
-
-    return [pscustomobject]@{
-        Name             = $Tool.Name
-        Executable       = $Tool.Executable
-        FoundOnPath      = $foundOnPath
-        ResolvedPath     = $resolvedPath
-        CandidateDir     = $candidateDir
-        CandidateExe     = if ($candidateDir) { Join-Path $candidateDir $Tool.Executable } else { $null }
-        KnownDirectories = @($Tool.CandidateDirs)
-    }
-}
-
-function Ensure-RequiredTools {
-    param(
-        [Parameter(Mandatory)][string[]]$ToolNames,
-        [Parameter(Mandatory)][hashtable]$Config,
-        [ValidateSet('None', 'User')][string]$PersistMode = 'None'
-    )
-
-    Assert-PowerShell7
-
-    $toolMap = @{}
-    foreach ($tool in Get-RequiredTools) {
-        $toolMap[$tool.Name] = $tool
-    }
-
-    $results = New-Object System.Collections.Generic.List[object]
-    $missing = New-Object System.Collections.Generic.List[string]
-
-    foreach ($name in $ToolNames) {
-        if (-not $toolMap.ContainsKey($name)) {
-            throw "Unknown tool requirement: $name"
-        }
-
-        $status = Resolve-ToolStatus -Tool $toolMap[$name]
-        $sessionAdded = $false
-        $persisted = $false
-
-        if (-not $status.FoundOnPath -and $status.CandidateDir) {
-            Add-DirectoryToProcessPath -Directory $status.CandidateDir
-            $sessionAdded = $true
-
-            if ($PersistMode -eq 'User') {
-                Add-DirectoryToUserPath -Directory $status.CandidateDir
-                $persisted = $true
-            }
-
-            $status = Resolve-ToolStatus -Tool $toolMap[$name]
-        }
-
-        if (-not $status.FoundOnPath) {
-            $searched = if ($status.KnownDirectories.Count -gt 0) { $status.KnownDirectories -join ', ' } else { 'no fallback directories configured' }
-            $missing.Add('{0} (searched: {1})' -f $name, $searched)
-        }
-
-        $results.Add([pscustomobject]@{
-            Name         = $name
-            FoundOnPath  = $status.FoundOnPath
-            ResolvedPath = $status.ResolvedPath
-            SessionAdded = $sessionAdded
-            Persisted    = $persisted
-            CandidateDir = $status.CandidateDir
-        }) | Out-Null
-    }
-
-    foreach ($result in $results) {
-        if ($result.FoundOnPath) {
-            if ($result.Persisted) {
-                Write-Host ('PATH fixed for session and user: {0} -> {1}' -f $result.Name, $result.ResolvedPath)
-                Write-Log -Config $Config -Message "PATH session+user repair: $($result.Name) -> $($result.ResolvedPath)"
-            } elseif ($result.SessionAdded) {
-                Write-Host ('PATH fixed for session: {0} -> {1}' -f $result.Name, $result.ResolvedPath)
-                Write-Log -Config $Config -Message "PATH session repair: $($result.Name) -> $($result.ResolvedPath)"
-            }
-        }
-    }
-
-    if ($missing.Count -gt 0) {
-        throw ('Missing required tools: {0}' -f ($missing -join '; '))
-    }
-
-    return $results
-}
-
-function Get-ResolvedBranch {
-    param(
-        [Parameter(Mandatory)][hashtable]$Repo,
-        [Parameter(Mandatory)][hashtable]$Config
-    )
-
-    if ($Repo.BranchMode -eq 'Pinned') {
-        return Normalize-BranchName -Branch ([string]$Repo.Branch)
-    }
-
-    $repoId = Get-RepoOwnerAndName -Url $Repo.Url
-    $json = & gh repo view "$($repoId.Owner)/$($repoId.Name)" --json defaultBranchRef 2>&1
-    if ($LASTEXITCODE -ne 0) {
-        throw "Failed to resolve default branch for $($Repo.Name) with gh: $json"
-    }
-
-    $data = $json | ConvertFrom-Json
-    $branch = [string]$data.defaultBranchRef.name
-    if ([string]::IsNullOrWhiteSpace($branch)) {
-        throw "GitHub returned an empty default branch for $($Repo.Name)."
-    }
-
-    Write-Log -Config $Config -Message "Resolved default branch for $($Repo.Name): $branch"
-    return (Normalize-BranchName -Branch $branch)
-}
-
-function Invoke-Git {
-    param(
-        [Parameter(Mandatory)][string]$WorkingDirectory,
-        [Parameter(Mandatory)][string[]]$Arguments
-    )
-
-    $output = & git -C $WorkingDirectory @Arguments 2>&1
-    $exitCode = $LASTEXITCODE
-    return @{
-        Output   = $output
-        ExitCode = $exitCode
-    }
+    $logPath = Join-Path $Root $Config.LogFileName
+    Add-Content -LiteralPath $logPath -Value ('[{0}] {1}' -f (Get-Date -Format 'yyyy-MM-dd HH:mm:ss'), $Message)
 }
 
 function Get-RepoPath {
     param(
-        [Parameter(Mandatory)][hashtable]$Config,
-        [Parameter(Mandatory)][hashtable]$Repo
+        [Parameter(Mandatory = $true)]
+        [string]$Root,
+
+        [Parameter(Mandatory = $true)]
+        [hashtable]$Repo
     )
 
-    $rootKey = if ($Repo.ContainsKey('RootKey') -and -not [string]::IsNullOrWhiteSpace([string]$Repo.RootKey)) { [string]$Repo.RootKey } else { 'TargetRoot' }
-    if (-not $Config.ContainsKey($rootKey)) {
-        throw "Missing config root '$rootKey' for repo $($Repo.Name)."
-    }
-
-    return Join-Path $Config[$rootKey] $Repo.Path
+    Join-Path $Root $Repo.RelativePath
 }
 
-function Get-RepoByName {
+function Get-BuildRepoPath {
     param(
-        [Parameter(Mandatory)][hashtable]$Config,
-        [Parameter(Mandatory)][string]$Name
+        [Parameter(Mandatory = $true)]
+        [string]$Root,
+
+        [Parameter(Mandatory = $true)]
+        [hashtable]$Config
     )
 
-    return @(Get-AllRepos -Config $Config | Where-Object { $_.Name -eq $Name } | Select-Object -First 1)[0]
+    $buildRepo = @($Config.Repos | Where-Object { $_.Name -eq 'eMule-build' } | Select-Object -First 1)
+    if (-not $buildRepo) {
+        throw 'eMule-build repo configuration not found.'
+    }
+
+    Get-RepoPath -Root $Root -Repo $buildRepo
+}
+
+function Invoke-BuildRepoCommand {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Root,
+
+        [Parameter(Mandatory = $true)]
+        [hashtable]$Config,
+
+        [Parameter(Mandatory = $true)]
+        [string]$BuildCommand,
+
+        [string]$WorkspaceName
+    )
+
+    $buildRepoPath = Get-BuildRepoPath -Root $Root -Config $Config
+    $buildScriptPath = Join-Path $buildRepoPath 'workspace.ps1'
+    if (-not (Test-Path -LiteralPath $buildScriptPath -PathType Leaf)) {
+        throw "Build repo entrypoint not found: $buildScriptPath"
+    }
+
+    $arguments = @(
+        '-NoLogo'
+        '-NoProfile'
+        '-ExecutionPolicy'
+        'Bypass'
+        '-File'
+        $buildScriptPath
+        $BuildCommand
+        '-EmuleWorkspaceRoot'
+        $Root
+    )
+    if (-not [string]::IsNullOrWhiteSpace($WorkspaceName)) {
+        $arguments += @('-WorkspaceName', $WorkspaceName)
+    }
+
+    Invoke-Checked -FilePath 'pwsh' -ArgumentList $arguments
+}
+
+function Get-AllRepoConfigs {
+    param([Parameter(Mandatory = $true)][hashtable]$Config)
+
+    @($Config.AppRepo) + @($Config.Repos) + @($Config.AnalysisRepos) + @($Config.ThirdPartyRepos)
 }
 
 function Get-AnalysisRepos {
-    param([Parameter(Mandatory)][hashtable]$Config)
+    param([Parameter(Mandatory = $true)][hashtable]$Config)
 
-    return @(Get-AllRepos -Config $Config | Where-Object { $_.ContainsKey('RootKey') -and $_.RootKey -eq 'AnalysisRoot' })
+    @($Config.AnalysisRepos)
 }
 
 function Get-AnalysisCompareRoot {
     param(
-        [Parameter(Mandatory)][hashtable]$Config,
-        [Parameter(Mandatory)][hashtable]$Repo
+        [Parameter(Mandatory = $true)]
+        [string]$Root,
+
+        [Parameter(Mandatory = $true)]
+        [hashtable]$Repo
     )
 
-    $repoPath = Get-RepoPath -Config $Config -Repo $Repo
+    $repoPath = Get-RepoPath -Root $Root -Repo $Repo
     $compareSubdir = if ($Repo.ContainsKey('CompareSubdir')) { [string]$Repo.CompareSubdir } else { '' }
     if ([string]::IsNullOrWhiteSpace($compareSubdir)) {
         return $repoPath
@@ -348,66 +344,22 @@ function Get-AnalysisCompareRoot {
     return Join-Path $repoPath $compareSubdir
 }
 
-function Get-BuildWorkspaceManifest {
+function Get-LocalVariantCompareTargets {
     param(
-        [Parameter(Mandatory)][hashtable]$Config,
-        [Parameter(Mandatory)][hashtable]$Repo
+        [Parameter(Mandatory = $true)]
+        [string]$Root,
+
+        [Parameter(Mandatory = $true)]
+        [hashtable]$Config
     )
 
-    $repoPath = Get-RepoPath -Config $Config -Repo $Repo
-    if ($script:BuildWorkspaceManifestCache.ContainsKey($repoPath)) {
-        return $script:BuildWorkspaceManifestCache[$repoPath]
-    }
-
-    $depsPath = Join-Path $repoPath 'deps.psd1'
-    if (-not (Test-Path -LiteralPath $depsPath)) {
-        return $null
-    }
-
-    try {
-        $manifest = Import-PowerShellDataFile -Path $depsPath
-    } catch {
-        return $null
-    }
-
-    $script:BuildWorkspaceManifestCache[$repoPath] = $manifest
-    return $manifest
-}
-
-function Get-SeriesCompareToken {
-    param([Parameter(Mandatory)][string]$Series)
-
-    $digits = [regex]::Matches($Series, '\d+') | ForEach-Object { $_.Value }
-    if ($digits.Count -ge 2) {
-        return ($digits[0] + $digits[1]).PadLeft(3, '0')
-    }
-
-    return (($Series -replace '[^0-9]', '')).PadLeft(3, '0')
-}
-
-function Get-LocalVariantCompareTargets {
-    param([Parameter(Mandatory)][hashtable]$Config)
-
-    $targets = [System.Collections.Generic.List[object]]::new()
-    foreach ($repo in @($Config.Repos | Where-Object { $_.Role -eq 'BuildWorkspace' })) {
-        $manifest = Get-BuildWorkspaceManifest -Config $Config -Repo $repo
-        if ($null -eq $manifest -or -not $manifest.ContainsKey('Workspace') -or -not $manifest.Workspace.ContainsKey('AppRepo')) {
-            continue
-        }
-
-        $appRepo = $manifest.Workspace.AppRepo
-        $compareSubdir = if ($appRepo.ContainsKey('CompareSubdir')) { [string]$appRepo.CompareSubdir } else { '' }
-        $prefix = 'local-{0}' -f (Get-SeriesCompareToken -Series ([string]$repo.Series))
-        foreach ($variant in @($appRepo.Variants)) {
-            $variantPath = Join-Path (Get-RepoPath -Config $Config -Repo $repo) ([string]$variant.Path)
-            $comparePath = if ([string]::IsNullOrWhiteSpace($compareSubdir)) { $variantPath } else { Join-Path $variantPath $compareSubdir }
-            $targets.Add([pscustomobject]@{
-                    Name = ('{0}-{1}' -f $prefix, ([string]$variant.Name))
-                    Path = $comparePath
-                    Series = [string]$repo.Series
-                    Variant = [string]$variant.Name
-                    RepoName = [string]$repo.Name
-                }) | Out-Null
+    $targets = @()
+    foreach ($worktree in @($Config.AppRepo.Worktrees)) {
+        $targetName = 'local-072-{0}' -f $worktree.Name
+        $targetPath = Join-Path $Root ($worktree.RelativePath + '\srchybrid')
+        $targets += [pscustomobject]@{
+            Name = $targetName
+            Path = $targetPath
         }
     }
 
@@ -415,344 +367,33 @@ function Get-LocalVariantCompareTargets {
 }
 
 function Get-LocalVariantTargetMap {
-    param([Parameter(Mandatory)][hashtable]$Config)
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Root,
+
+        [Parameter(Mandatory = $true)]
+        [hashtable]$Config
+    )
 
     $map = @{}
-    foreach ($target in Get-LocalVariantCompareTargets -Config $Config) {
+    foreach ($target in Get-LocalVariantCompareTargets -Root $Root -Config $Config) {
         $map[$target.Name] = $target
     }
 
-    return $map
-}
-
-function Get-ExpectedBranches {
-    param([Parameter(Mandatory)][hashtable]$Repo)
-
-    if ($Repo.ContainsKey('ExpectedBranches') -and $Repo.ExpectedBranches) {
-        return @($Repo.ExpectedBranches)
-    }
-
-    return @([string]$Repo.Branch)
-}
-
-function Normalize-BranchName {
-    param([Parameter(Mandatory)][string]$Branch)
-
-    $normalized = $Branch.Trim()
-    foreach ($prefix in @('refs/heads/', 'heads/')) {
-        if ($normalized.StartsWith($prefix, [System.StringComparison]::OrdinalIgnoreCase)) {
-            return $normalized.Substring($prefix.Length)
-        }
-    }
-
-    return $normalized
-}
-
-function Get-LocalBranches {
-    param([Parameter(Mandatory)][string]$Path)
-
-    if (-not (Test-IsGitRepo -Path $Path)) {
-        return @()
-    }
-
-    $result = Invoke-Git -WorkingDirectory $Path -Arguments @('for-each-ref', '--format=%(refname:short)', 'refs/heads')
-    if ($result.ExitCode -ne 0) {
-        return @()
-    }
-
-    return @($result.Output | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
-}
-
-function Get-ExpectedWorkspacePaths {
-    param(
-        [Parameter(Mandatory)][hashtable]$Config,
-        [Parameter(Mandatory)][hashtable]$Repo
-    )
-
-    $repoPath = Get-RepoPath -Config $Config -Repo $Repo
-    $depsPath = Join-Path $repoPath 'deps.psd1'
-    if (-not (Test-Path -LiteralPath $depsPath)) {
-        return @()
-    }
-
-    try {
-        $manifest = Import-PowerShellDataFile -Path $depsPath
-    } catch {
-        return @()
-    }
-
-    $paths = New-Object System.Collections.Generic.List[string]
-    if ($manifest.ContainsKey('Workspace') -and $manifest.Workspace.ContainsKey('AppRepo')) {
-        $appRepo = $manifest.Workspace.AppRepo
-        if ($appRepo.ContainsKey('Variants')) {
-            foreach ($variant in @($appRepo.Variants)) {
-                if ($variant.ContainsKey('Path') -and -not [string]::IsNullOrWhiteSpace([string]$variant.Path)) {
-                    $paths.Add([string]$variant.Path) | Out-Null
-                }
-            }
-        } elseif ($appRepo.ContainsKey('SeedRepo') -and $appRepo.SeedRepo.ContainsKey('Path')) {
-            $paths.Add([string]$appRepo.SeedRepo.Path) | Out-Null
-        }
-    }
-
-    return @($paths | Select-Object -Unique)
-}
-
-function Get-IgnoredRepoStatusPrefixes {
-    param(
-        [Parameter(Mandatory)][hashtable]$Config,
-        [Parameter(Mandatory)][hashtable]$Repo
-    )
-
-    if (-not $Repo.ContainsKey('Role') -or $Repo.Role -ne 'BuildWorkspace') {
-        return @()
-    }
-
-    return @(Get-ExpectedWorkspacePaths -Config $Config -Repo $Repo)
-}
-
-function Get-MaterializationState {
-    param(
-        [Parameter(Mandatory)][hashtable]$Config,
-        [Parameter(Mandatory)][hashtable]$Repo
-    )
-
-    $repoPath = Get-RepoPath -Config $Config -Repo $Repo
-    $expectedBranches = @(Get-ExpectedBranches -Repo $Repo | ForEach-Object { Normalize-BranchName -Branch $_ })
-    $localBranches = @(Get-LocalBranches -Path $repoPath)
-    $branchHits = @($expectedBranches | Where-Object { $_ -in $localBranches })
-
-    $expectedPaths = @(Get-ExpectedWorkspacePaths -Config $Config -Repo $Repo)
-    $pathHits = @()
-    foreach ($relativePath in $expectedPaths) {
-        if (Test-Path -LiteralPath (Join-Path $repoPath $relativePath)) {
-            $pathHits += $relativePath
-        }
-    }
-
-    $started = ($branchHits.Count -gt 1) -or ($pathHits.Count -gt 0)
-    $complete = ($expectedBranches.Count -eq 0 -or $branchHits.Count -eq $expectedBranches.Count) -and ($expectedPaths.Count -eq 0 -or $pathHits.Count -eq $expectedPaths.Count)
-
-    $state = if (-not $started) {
-        'clone-only'
-    } elseif ($complete) {
-        'materialized'
-    } else {
-        'partial'
-    }
-
-    return [pscustomobject]@{
-        State                = $state
-        ExpectedBranchCount  = $expectedBranches.Count
-        PresentBranchCount   = $branchHits.Count
-        ExpectedPathCount    = $expectedPaths.Count
-        PresentPathCount     = $pathHits.Count
-    }
-}
-
-function Ensure-ExpectedBranches {
-    param(
-        [Parameter(Mandatory)][hashtable]$Config,
-        [Parameter(Mandatory)][hashtable]$Repo
-    )
-
-    $repoPath = Get-RepoPath -Config $Config -Repo $Repo
-    $localBranches = @(Get-LocalBranches -Path $repoPath)
-    foreach ($branch in Get-ExpectedBranches -Repo $Repo) {
-        $normalizedBranch = Normalize-BranchName -Branch $branch
-        Write-Host "Ensuring branch $normalizedBranch in $($Repo.Name)"
-
-        $null = Invoke-Checked -FilePath 'git' -ArgumentList @('-C', $repoPath, 'fetch', 'origin', "refs/heads/$normalizedBranch`:refs/remotes/origin/$normalizedBranch") -WorkingDirectory $Config.TargetRoot -Label "git fetch branch $($Repo.Name) $normalizedBranch"
-
-        if ($normalizedBranch -notin $localBranches) {
-            $null = Invoke-Checked -FilePath 'git' -ArgumentList @('-C', $repoPath, 'branch', '--track', $normalizedBranch, "origin/$normalizedBranch") -WorkingDirectory $Config.TargetRoot -Label "git create branch $($Repo.Name) $normalizedBranch"
-            $localBranches += $normalizedBranch
-        }
-    }
-}
-
-function Invoke-InnerValidate {
-    param(
-        [Parameter(Mandatory)][hashtable]$Config,
-        [Parameter(Mandatory)][hashtable]$Repo,
-        [switch]$Full
-    )
-
-    $path = Get-RepoPath -Config $Config -Repo $Repo
-    $workspacePs1 = Join-Path $path 'workspace.ps1'
-    if (-not (Test-Path -LiteralPath $workspacePs1)) {
-        throw "Inner validate entrypoint not found: $workspacePs1"
-    }
-
-    $innerCommand = if ($Full) { 'validate-full' } else { 'validate' }
-    $null = Invoke-Checked -FilePath 'pwsh' -ArgumentList @('-NoLogo', '-NoProfile', '-File', $workspacePs1, $innerCommand) -WorkingDirectory $path -Label "inner validate $($Repo.Name)"
-}
-
-function Assert-RepoHealthyForMaterialize {
-    param(
-        [Parameter(Mandatory)][hashtable]$Config,
-        [Parameter(Mandatory)][hashtable]$Repo
-    )
-
-    $status = Get-RepoStatusInfo -Config $Config -Repo $Repo
-    if (-not $status.Exists) {
-        Clone-Repo -Config $Config -Repo $Repo
-        $status = Get-RepoStatusInfo -Config $Config -Repo $Repo
-    }
-
-    if (-not $status.IsGitRepo) {
-        throw "$($Repo.Name) is not a git repo."
-    }
-
-    if ($status.OriginUrl -ne $Repo.Url) {
-        throw "$($Repo.Name) has the wrong origin."
-    }
-
-    if ($status.Dirty) {
-        throw "$($Repo.Name) is dirty."
-    }
-
-    if ($status.BranchCurrent -ne $status.BranchExpected) {
-        Invoke-Checked -FilePath 'git' -ArgumentList @('-C', $status.Path, 'checkout', $status.BranchExpected) -WorkingDirectory $Config.TargetRoot -Label "git checkout $($Repo.Name)"
-    }
-}
-
-function Test-IsGitRepo {
-    param([Parameter(Mandatory)][string]$Path)
-
-    if (-not (Test-Path -LiteralPath $Path)) {
-        return $false
-    }
-
-    $result = Invoke-Git -WorkingDirectory $Path -Arguments @('rev-parse', '--show-toplevel')
-    return $result.ExitCode -eq 0
-}
-
-function Get-RepoStatusInfo {
-    param(
-        [Parameter(Mandatory)][hashtable]$Config,
-        [Parameter(Mandatory)][hashtable]$Repo
-    )
-
-    $path = Get-RepoPath -Config $Config -Repo $Repo
-    $branch = Get-ResolvedBranch -Repo $Repo -Config $Config
-
-    if (-not (Test-Path -LiteralPath $path)) {
-        return [pscustomobject]@{
-            Name           = $Repo.Name
-            Path           = $path
-            Exists         = $false
-            IsGitRepo      = $false
-            BranchExpected = $branch
-            BranchCurrent  = $null
-            OriginUrl      = $null
-            Commit         = $null
-            Dirty          = $false
-            Healthy        = $false
-            Problem        = 'missing'
-        }
-    }
-
-    if (-not (Test-IsGitRepo -Path $path)) {
-        return [pscustomobject]@{
-            Name           = $Repo.Name
-            Path           = $path
-            Exists         = $true
-            IsGitRepo      = $false
-            BranchExpected = $branch
-            BranchCurrent  = $null
-            OriginUrl      = $null
-            Commit         = $null
-            Dirty          = $false
-            Healthy        = $false
-            Problem        = 'not-a-git-repo'
-        }
-    }
-
-    $origin = (Invoke-Git -WorkingDirectory $path -Arguments @('remote', 'get-url', 'origin')).Output | Select-Object -First 1
-    $currentBranch = (Invoke-Git -WorkingDirectory $path -Arguments @('branch', '--show-current')).Output | Select-Object -First 1
-    $commit = (Invoke-Git -WorkingDirectory $path -Arguments @('rev-parse', 'HEAD')).Output | Select-Object -First 1
-    $ignoredPrefixes = @(
-        Get-IgnoredRepoStatusPrefixes -Config $Config -Repo $Repo |
-        ForEach-Object { (($_ -replace '\\', '/') -replace '/+$', '') }
-    )
-    $dirtyOutput = @(
-        (Invoke-Git -WorkingDirectory $path -Arguments @('status', '--porcelain')).Output |
-        Where-Object { -not [string]::IsNullOrWhiteSpace($_) } |
-        Where-Object {
-            $entry = $_
-            if ($entry.Length -lt 4) {
-                return $true
-            }
-
-            $statusPath = (($entry.Substring(3).Trim() -replace '\\', '/') -replace '/+$', '')
-            foreach ($prefix in $ignoredPrefixes) {
-                if ($statusPath -eq $prefix -or $statusPath.StartsWith("$prefix/")) {
-                    return $false
-                }
-            }
-
-            return $true
-        }
-    )
-    $dirty = [bool]($dirtyOutput | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
-
-    $problem = $null
-    if ($origin -ne $Repo.Url) {
-        $problem = 'wrong-origin'
-    } elseif ($currentBranch -ne $branch) {
-        $problem = 'wrong-branch'
-    } elseif ($dirty) {
-        $problem = 'dirty'
-    }
-
-    return [pscustomobject]@{
-        Name           = $Repo.Name
-        Path           = $path
-        Exists         = $true
-        IsGitRepo      = $true
-        BranchExpected = $branch
-        BranchCurrent  = $currentBranch
-        OriginUrl      = $origin
-        Commit         = $commit
-        Dirty          = $dirty
-        Healthy        = [string]::IsNullOrWhiteSpace($problem)
-        Problem        = $problem
-    }
-}
-
-function Assert-Prereqs {
-    param(
-        [Parameter(Mandatory)][hashtable]$Config,
-        [switch]$RequireCMake
-    )
-
-    $required = @('pwsh', 'git', 'gh')
-    if ($RequireCMake) {
-        $required += 'cmake'
-    }
-
-    Ensure-RequiredTools -ToolNames $required -Config $Config -PersistMode $Persist | Out-Null
-
-    $authOutput = & gh auth status 2>&1
-    if ($LASTEXITCODE -ne 0) {
-        throw "gh is installed but not authenticated: $authOutput"
-    }
+    $map
 }
 
 function Get-WinMergePath {
-    $candidates = @(
+    foreach ($candidate in @(
         'C:\Program Files\WinMerge\WinMergeU.exe'
         'C:\Program Files (x86)\WinMerge\WinMergeU.exe'
-    )
-
-    foreach ($candidate in $candidates) {
-        if (Test-Path -LiteralPath $candidate) {
+    )) {
+        if (Test-Path -LiteralPath $candidate -PathType Leaf) {
             return $candidate
         }
     }
 
-    $command = Get-Command 'WinMergeU.exe' -ErrorAction SilentlyContinue
+    $command = Get-Command 'WinMergeU.exe' -ErrorAction SilentlyContinue | Select-Object -First 1
     if ($null -ne $command) {
         return $command.Source
     }
@@ -762,35 +403,50 @@ function Get-WinMergePath {
 
 function Get-CompareRoot {
     param(
-        [Parameter(Mandatory)][hashtable]$Config,
-        [Parameter(Mandatory)][string]$Name
+        [Parameter(Mandatory = $true)]
+        [string]$Root,
+
+        [Parameter(Mandatory = $true)]
+        [hashtable]$Config,
+
+        [Parameter(Mandatory = $true)]
+        [string]$Name
     )
 
-    $localTargets = Get-LocalVariantTargetMap -Config $Config
+    $localTargets = Get-LocalVariantTargetMap -Root $Root -Config $Config
     if ($localTargets.ContainsKey($Name)) {
         return $localTargets[$Name].Path
     }
 
-    $repo = Get-RepoByName -Config $Config -Name $Name
+    $repo = @(Get-AnalysisRepos -Config $Config | Where-Object { $_.Name -eq $Name } | Select-Object -First 1)[0]
     if ($null -eq $repo) {
         throw "Unknown compare target: $Name"
     }
 
-    return Get-AnalysisCompareRoot -Config $Config -Repo $repo
+    return Get-AnalysisCompareRoot -Root $Root -Repo $repo
 }
 
 function New-ComparePreset {
     param(
-        [Parameter(Mandatory)][string]$Key,
-        [Parameter(Mandatory)][string]$Label,
-        [Parameter(Mandatory)][string]$Category,
-        [Parameter(Mandatory)][string]$LeftName,
-        [Parameter(Mandatory)][string]$RightName
+        [Parameter(Mandatory = $true)]
+        [string]$Key,
+
+        [Parameter(Mandatory = $true)]
+        [string]$Label,
+
+        [Parameter(Mandatory = $true)]
+        [string]$Category,
+
+        [Parameter(Mandatory = $true)]
+        [string]$LeftName,
+
+        [Parameter(Mandatory = $true)]
+        [string]$RightName
     )
 
-    return [pscustomobject]@{
-        Key      = $Key
-        Label    = $Label
+    [pscustomobject]@{
+        Key = $Key
+        Label = $Label
         Category = $Category
         LeftName = $LeftName
         RightName = $RightName
@@ -798,49 +454,47 @@ function New-ComparePreset {
 }
 
 function Get-ComparePresets {
-    param([Parameter(Mandatory)][hashtable]$Config)
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Root,
 
-    $presets = New-Object System.Collections.Generic.List[object]
-    $localTargets = @(Get-LocalVariantCompareTargets -Config $Config | Sort-Object Name)
-    $local060Targets = @($localTargets | Where-Object { $_.Name -like 'local-060-*' })
-    $local072Targets = @($localTargets | Where-Object { $_.Name -like 'local-072-*' })
+        [Parameter(Mandatory = $true)]
+        [hashtable]$Config
+    )
 
-    foreach ($right in $localTargets) {
-        $presets.Add((New-ComparePreset -Key ("emuleai-vs-{0}" -f $right.Name) -Label ("eMuleAI vs {0}" -f $right.Name) -Category 'eMuleAI vs local' -LeftName 'emuleai' -RightName $right.Name)) | Out-Null
-        $presets.Add((New-ComparePreset -Key ("community-060-vs-{0}" -f $right.Name) -Label ("Community 0.60 vs {0}" -f $right.Name) -Category 'Community 0.60 vs local' -LeftName 'community-0.60' -RightName $right.Name)) | Out-Null
-        $presets.Add((New-ComparePreset -Key ("community-072-vs-{0}" -f $right.Name) -Label ("Community 0.72 vs {0}" -f $right.Name) -Category 'Community 0.72 vs local' -LeftName 'community-0.72' -RightName $right.Name)) | Out-Null
+    $presets = @()
+    $localTargetNames = @((Get-LocalVariantCompareTargets -Root $Root -Config $Config).Name)
+
+    foreach ($right in $localTargetNames) {
+        $presets += New-ComparePreset -Key ("emuleai-vs-{0}" -f $right) -Label ("eMuleAI vs {0}" -f $right) -Category 'eMuleAI vs local' -LeftName 'emuleai' -RightName $right
+        $presets += New-ComparePreset -Key ("community-060-vs-{0}" -f $right) -Label ("Community 0.60 vs {0}" -f $right) -Category 'Community 0.60 vs local' -LeftName 'community-0.60' -RightName $right
+        $presets += New-ComparePreset -Key ("community-072-vs-{0}" -f $right) -Label ("Community 0.72 vs {0}" -f $right) -Category 'Community 0.72 vs local' -LeftName 'community-0.72' -RightName $right
+        $presets += New-ComparePreset -Key ("mods-archive-vs-{0}" -f $right) -Label ("Mods archive vs {0}" -f $right) -Category 'Mods Archive' -LeftName 'mods-archive' -RightName $right
     }
 
-    foreach ($left in $local060Targets) {
-        foreach ($right in $local072Targets) {
-            $presets.Add((New-ComparePreset -Key ("{0}-vs-{1}" -f $left.Name, $right.Name) -Label ("{0} vs {1}" -f $left.Name, $right.Name) -Category 'Local 0.60 vs local 0.72' -LeftName $left.Name -RightName $right.Name)) | Out-Null
-        }
-    }
-
-    if ($local060Targets.Count -gt 0) {
-        $presets.Add((New-ComparePreset -Key ('mods-archive-vs-{0}' -f $local060Targets[0].Name) -Label ('Mods archive vs {0}' -f $local060Targets[0].Name) -Category 'Mods Archive' -LeftName 'mods-archive' -RightName $local060Targets[0].Name)) | Out-Null
-    }
-    if ($local072Targets.Count -gt 0) {
-        $presets.Add((New-ComparePreset -Key ('mods-archive-vs-{0}' -f $local072Targets[0].Name) -Label ('Mods archive vs {0}' -f $local072Targets[0].Name) -Category 'Mods Archive' -LeftName 'mods-archive' -RightName $local072Targets[0].Name)) | Out-Null
-    }
-
-    return $presets
+    return @($presets)
 }
 
 function Invoke-ComparePreset {
     param(
-        [Parameter(Mandatory)][hashtable]$Config,
-        [Parameter(Mandatory)]$Preset
+        [Parameter(Mandatory = $true)]
+        [string]$Root,
+
+        [Parameter(Mandatory = $true)]
+        [hashtable]$Config,
+
+        [Parameter(Mandatory = $true)]
+        $Preset
     )
 
     $winMergePath = Get-WinMergePath
-    $leftPath = Get-CompareRoot -Config $Config -Name $Preset.LeftName
-    $rightPath = Get-CompareRoot -Config $Config -Name $Preset.RightName
+    $leftPath = Get-CompareRoot -Root $Root -Config $Config -Name $Preset.LeftName
+    $rightPath = Get-CompareRoot -Root $Root -Config $Config -Name $Preset.RightName
 
     foreach ($target in @(
-            [pscustomobject]@{ Name = $Preset.LeftName; Path = $leftPath }
-            [pscustomobject]@{ Name = $Preset.RightName; Path = $rightPath }
-        )) {
+        [pscustomobject]@{ Name = $Preset.LeftName; Path = $leftPath }
+        [pscustomobject]@{ Name = $Preset.RightName; Path = $rightPath }
+    )) {
         if (-not (Test-Path -LiteralPath $target.Path)) {
             throw "Compare target path missing for $($target.Name): $($target.Path)"
         }
@@ -851,69 +505,94 @@ function Invoke-ComparePreset {
 
 function Write-CompareLauncher {
     param(
-        [Parameter(Mandatory)][string]$Path,
-        [Parameter(Mandatory)][string]$PresetKey,
-        [Parameter(Mandatory)][string]$WorkspaceScriptPath
+        [Parameter(Mandatory = $true)]
+        [string]$Path,
+
+        [Parameter(Mandatory = $true)]
+        [string]$PresetKey,
+
+        [Parameter(Mandatory = $true)]
+        [string]$WorkspaceScriptPath,
+
+        [Parameter(Mandatory = $true)]
+        [string]$WorkspaceRoot
     )
 
     $content = @(
         '@ECHO OFF'
-        'pwsh -NoLogo -NoProfile -ExecutionPolicy Bypass -File "{0}" compare "{1}"' -f $WorkspaceScriptPath, $PresetKey
+        'pwsh -NoLogo -NoProfile -ExecutionPolicy Bypass -File "{0}" compare "{1}" -EmuleWorkspaceRoot "{2}"' -f $WorkspaceScriptPath, $PresetKey, $WorkspaceRoot
     )
 
-    Set-Content -LiteralPath $Path -Value $content -Encoding ASCII
+    Set-Content -LiteralPath $Path -Value $content -Encoding ascii
 }
 
 function Write-CompareMenuLauncher {
     param(
-        [Parameter(Mandatory)][string]$Path,
-        [Parameter(Mandatory)][string]$WorkspaceScriptPath,
+        [Parameter(Mandatory = $true)]
+        [string]$Path,
+
+        [Parameter(Mandatory = $true)]
+        [string]$WorkspaceScriptPath,
+
+        [Parameter(Mandatory = $true)]
+        [string]$WorkspaceRoot,
+
         [string]$Key
     )
 
     $argumentSuffix = if ([string]::IsNullOrWhiteSpace($Key)) { '' } else { ' "{0}"' -f $Key }
-
     $content = @(
         '@ECHO OFF'
-        'pwsh -NoLogo -NoProfile -ExecutionPolicy Bypass -File "{0}" compare{1}' -f $WorkspaceScriptPath, $argumentSuffix
+        'pwsh -NoLogo -NoProfile -ExecutionPolicy Bypass -File "{0}" compare{1} -EmuleWorkspaceRoot "{2}"' -f $WorkspaceScriptPath, $argumentSuffix, $WorkspaceRoot
     )
 
-    Set-Content -LiteralPath $Path -Value $content -Encoding ASCII
+    Set-Content -LiteralPath $Path -Value $content -Encoding ascii
 }
 
 function Get-CompareOutputRoot {
-    param([Parameter(Mandatory)][hashtable]$Config)
+    param([Parameter(Mandatory = $true)][string]$Root)
 
-    return Join-Path $Config.AnalysisRoot 'compare'
+    Join-Path $Root 'analysis\compare'
 }
 
 function Write-CompareLaunchers {
-    param([Parameter(Mandatory)][hashtable]$Config)
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Root,
 
-    $compareRoot = Get-CompareOutputRoot -Config $Config
+        [Parameter(Mandatory = $true)]
+        [hashtable]$Config
+    )
+
+    $compareRoot = Get-CompareOutputRoot -Root $Root
     $modsRoot = Join-Path $compareRoot 'mods-archive'
     $workspaceScriptPath = Join-Path (Get-ScriptRoot) 'workspace.ps1'
 
-    Ensure-Directory -Path $Config.AnalysisRoot
+    Ensure-Directory -Path (Join-Path $Root 'analysis')
     Ensure-Directory -Path $compareRoot
     Ensure-Directory -Path $modsRoot
 
-    Write-CompareMenuLauncher -Path (Join-Path $compareRoot 'open-compare-menu.cmd') -WorkspaceScriptPath $workspaceScriptPath
-    Write-CompareMenuLauncher -Path (Join-Path $modsRoot 'open-mods-archive-menu.cmd') -WorkspaceScriptPath $workspaceScriptPath -Key 'mods-archive'
+    Write-CompareMenuLauncher -Path (Join-Path $compareRoot 'open-compare-menu.cmd') -WorkspaceScriptPath $workspaceScriptPath -WorkspaceRoot $Root
+    Write-CompareMenuLauncher -Path (Join-Path $modsRoot 'open-mods-archive-menu.cmd') -WorkspaceScriptPath $workspaceScriptPath -WorkspaceRoot $Root -Key 'mods-archive'
 
-    foreach ($preset in Get-ComparePresets -Config $Config) {
+    foreach ($preset in Get-ComparePresets -Root $Root -Config $Config) {
         $destinationRoot = if ($preset.Category -eq 'Mods Archive') { $modsRoot } else { $compareRoot }
-        Write-CompareLauncher -Path (Join-Path $destinationRoot ('{0}.cmd' -f $preset.Key)) -PresetKey $preset.Key -WorkspaceScriptPath $workspaceScriptPath
+        Write-CompareLauncher -Path (Join-Path $destinationRoot ('{0}.cmd' -f $preset.Key)) -PresetKey $preset.Key -WorkspaceScriptPath $workspaceScriptPath -WorkspaceRoot $Root
     }
 }
 
 function Show-CompareMenu {
     param(
-        [Parameter(Mandatory)][hashtable]$Config,
+        [Parameter(Mandatory = $true)]
+        [string]$Root,
+
+        [Parameter(Mandatory = $true)]
+        [hashtable]$Config,
+
         [string]$Category
     )
 
-    $presets = @(Get-ComparePresets -Config $Config)
+    $presets = @(Get-ComparePresets -Root $Root -Config $Config)
     if (-not [string]::IsNullOrWhiteSpace($Category)) {
         $presets = @($presets | Where-Object { $_.Category -eq $Category })
     }
@@ -942,7 +621,7 @@ function Show-CompareMenu {
 
         $selected = 0
         if ([int]::TryParse($choice, [ref]$selected) -and $selected -ge 1 -and $selected -lt $index) {
-            Invoke-ComparePreset -Config $Config -Preset $presets[$selected - 1]
+            Invoke-ComparePreset -Root $Root -Config $Config -Preset $presets[$selected - 1]
             return
         }
 
@@ -952,431 +631,708 @@ function Show-CompareMenu {
 
 function Invoke-Compare {
     param(
-        [Parameter(Mandatory)][hashtable]$Config,
+        [Parameter(Mandatory = $true)]
+        [string]$Root,
+
+        [Parameter(Mandatory = $true)]
+        [hashtable]$Config,
+
         [string]$Key
     )
 
-    Write-CompareLaunchers -Config $Config
+    Write-CompareLaunchers -Root $Root -Config $Config
 
     if ([string]::IsNullOrWhiteSpace($Key)) {
-        Show-CompareMenu -Config $Config
+        Show-CompareMenu -Root $Root -Config $Config
         return
     }
 
     if ($Key -eq 'mods-archive') {
-        Show-CompareMenu -Config $Config -Category 'Mods Archive'
+        Show-CompareMenu -Root $Root -Config $Config -Category 'Mods Archive'
         return
     }
 
-    $preset = @(Get-ComparePresets -Config $Config | Where-Object { $_.Key -eq $Key } | Select-Object -First 1)[0]
+    $preset = @(Get-ComparePresets -Root $Root -Config $Config | Where-Object { $_.Key -eq $Key } | Select-Object -First 1)[0]
     if ($null -eq $preset) {
         throw "Unknown compare preset: $Key"
     }
 
-    Invoke-ComparePreset -Config $Config -Preset $preset
+    Invoke-ComparePreset -Root $Root -Config $Config -Preset $preset
 }
 
-function Invoke-Checked {
+function Ensure-RequiredTools {
     param(
-        [Parameter(Mandatory)][string]$FilePath,
-        [Parameter()][string[]]$ArgumentList = @(),
-        [Parameter(Mandatory)][string]$WorkingDirectory,
-        [Parameter(Mandatory)][string]$Label
+        [Parameter(Mandatory = $true)]
+        [ValidateSet('None', 'User')]
+        [string]$PersistMode
     )
 
-    & $FilePath @ArgumentList 2>&1 | ForEach-Object { $_ }
-    if ($LASTEXITCODE -ne 0) {
-        throw "$Label failed with exit code $LASTEXITCODE."
-    }
-}
-
-function Clone-Repo {
-    param(
-        [Parameter(Mandatory)][hashtable]$Config,
-        [Parameter(Mandatory)][hashtable]$Repo
+    $toolCandidates = @(
+        @{ Name = 'pwsh'; Executable = 'pwsh.exe'; Directory = 'C:\Program Files\PowerShell\7' }
+        @{ Name = 'git'; Executable = 'git.exe'; Directory = 'C:\Program Files\Git\cmd' }
+        @{ Name = 'gh'; Executable = 'gh.exe'; Directory = 'C:\Program Files\GitHub CLI' }
+        @{ Name = 'cmake'; Executable = 'cmake.exe'; Directory = 'C:\Program Files\Microsoft Visual Studio\18\Professional\Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin' }
     )
 
-    $targetPath = Get-RepoPath -Config $Config -Repo $Repo
-    $branch = Get-ResolvedBranch -Repo $Repo -Config $Config
-
-    if (Test-Path -LiteralPath $targetPath) {
-        return
-    }
-
-    Ensure-Directory -Path (Split-Path -Parent $targetPath)
-    Write-Host "Cloning $($Repo.Name) -> $targetPath"
-    Write-Log -Config $Config -Message "Clone start: $($Repo.Name) [$branch]"
-
-    $null = Invoke-Checked -FilePath 'git' -ArgumentList @('clone', '--branch', $branch, $Repo.Url, $targetPath) -WorkingDirectory $Config.TargetRoot -Label "git clone $($Repo.Name)"
-
-    if ($Repo.ContainsKey('HasSubmodules') -and $Repo.HasSubmodules) {
-        Update-Submodules -Config $Config -Repo $Repo
-    }
-
-    Write-Log -Config $Config -Message "Clone complete: $($Repo.Name) [$branch]"
-}
-
-function Update-Submodules {
-    param(
-        [Parameter(Mandatory)][hashtable]$Config,
-        [Parameter(Mandatory)][hashtable]$Repo
-    )
-
-    $targetPath = Get-RepoPath -Config $Config -Repo $Repo
-    if (-not (Test-IsGitRepo -Path $targetPath)) {
-        throw "Cannot update submodules for non-repo path: $targetPath"
-    }
-
-    Write-Host "Updating submodules for $($Repo.Name)"
-    Write-Log -Config $Config -Message "Submodule update start: $($Repo.Name)"
-    $null = Invoke-Checked -FilePath 'git' -ArgumentList @('-C', $targetPath, 'submodule', 'update', '--init', '--recursive') -WorkingDirectory $Config.TargetRoot -Label "git submodule update $($Repo.Name)"
-    Write-Log -Config $Config -Message "Submodule update complete: $($Repo.Name)"
-}
-
-function Sync-Repo {
-    param(
-        [Parameter(Mandatory)][hashtable]$Config,
-        [Parameter(Mandatory)][hashtable]$Repo
-    )
-
-    $status = Get-RepoStatusInfo -Config $Config -Repo $Repo
-    if (-not $status.Exists) {
-        Clone-Repo -Config $Config -Repo $Repo
-        return [pscustomobject]@{ Name = $Repo.Name; Result = 'cloned' }
-    }
-
-    if (-not $status.IsGitRepo) {
-        return [pscustomobject]@{ Name = $Repo.Name; Result = 'blocked'; Reason = 'not-a-git-repo' }
-    }
-
-    if ($status.OriginUrl -ne $Repo.Url) {
-        return [pscustomobject]@{ Name = $Repo.Name; Result = 'blocked'; Reason = 'wrong-origin' }
-    }
-
-    if ($status.Dirty) {
-        return [pscustomobject]@{ Name = $Repo.Name; Result = 'blocked'; Reason = 'dirty' }
-    }
-
-    $path = $status.Path
-    $branch = $status.BranchExpected
-    Write-Host "Syncing $($Repo.Name)"
-    Write-Log -Config $Config -Message "Sync start: $($Repo.Name) [$branch]"
-
-    $null = Invoke-Checked -FilePath 'git' -ArgumentList @('-C', $path, 'fetch', '--all', '--prune') -WorkingDirectory $Config.TargetRoot -Label "git fetch $($Repo.Name)"
-    $null = Invoke-Checked -FilePath 'git' -ArgumentList @('-C', $path, 'checkout', $branch) -WorkingDirectory $Config.TargetRoot -Label "git checkout $($Repo.Name)"
-    $null = Invoke-Checked -FilePath 'git' -ArgumentList @('-C', $path, 'pull', '--ff-only', 'origin', $branch) -WorkingDirectory $Config.TargetRoot -Label "git pull $($Repo.Name)"
-
-    if ($Repo.ContainsKey('HasSubmodules') -and $Repo.HasSubmodules) {
-        Update-Submodules -Config $Config -Repo $Repo
-    }
-
-    Write-Log -Config $Config -Message "Sync complete: $($Repo.Name) [$branch]"
-    return [pscustomobject]@{ Name = $Repo.Name; Result = 'synced' }
-}
-
-function Show-Status {
-    param([Parameter(Mandatory)][hashtable]$Config)
-
-    $rows = foreach ($repo in Get-AllRepos -Config $Config) {
-        $info = Get-RepoStatusInfo -Config $Config -Repo $repo
-        [pscustomobject]@{
-            Name           = $info.Name
-            Problem        = if ($info.Healthy) { 'ok' } else { $info.Problem }
-            BranchExpected = $info.BranchExpected
-            BranchCurrent  = $info.BranchCurrent
-            Dirty          = $info.Dirty
-            Materialize    = if ($repo.ContainsKey('Role') -and $repo.Role -eq 'BuildWorkspace') {
-                $state = Get-MaterializationState -Config $Config -Repo $repo
-                '{0} ({1}/{2} branches, {3}/{4} paths)' -f $state.State, $state.PresentBranchCount, $state.ExpectedBranchCount, $state.PresentPathCount, $state.ExpectedPathCount
-            } elseif ($repo.ContainsKey('Role') -and $repo.Role -eq 'Tests') {
-                'clone-only'
-            } elseif ($repo.ContainsKey('RootKey') -and $repo.RootKey -eq 'AnalysisRoot') {
-                'analysis'
-            } else {
-                'n/a'
-            }
-            Commit         = $info.Commit
-            Path           = $info.Path
-        }
-    }
-
-    $rows | Format-Table -AutoSize
-}
-
-function Validate-Workspace {
-    param(
-        [Parameter(Mandatory)][hashtable]$Config,
-        [switch]$Full
-    )
-
-    Assert-Prereqs -Config $Config -RequireCMake
-
-    $problems = New-Object System.Collections.Generic.List[string]
-    foreach ($repo in $Config.Repos) {
-        $info = Get-RepoStatusInfo -Config $Config -Repo $repo
-        if (-not $info.Healthy) {
-            $problems.Add("$($repo.Name): $($info.Problem)")
+    foreach ($tool in $toolCandidates) {
+        $resolved = Get-Command $tool.Name -ErrorAction SilentlyContinue
+        if ($resolved) {
             continue
         }
 
-        if ($repo.Role -eq 'BuildWorkspace') {
-            $state = Get-MaterializationState -Config $Config -Repo $repo
-            if ($state.State -eq 'partial') {
-                $problems.Add("$($repo.Name): partial materialization ($($state.PresentBranchCount)/$($state.ExpectedBranchCount) branches, $($state.PresentPathCount)/$($state.ExpectedPathCount) paths)")
-                continue
-            }
+        if (-not (Test-Path -LiteralPath (Join-Path $tool.Directory $tool.Executable) -PathType Leaf)) {
+            throw "Required tool '$($tool.Name)' is not available on PATH and no fallback was found."
+        }
 
-            if ($state.State -eq 'materialized') {
-                try {
-                    Invoke-InnerValidate -Config $Config -Repo $repo -Full:$Full
-                } catch {
-                    $problems.Add("$($repo.Name): $($_.Exception.Message)")
-                }
-            }
-        } elseif ($repo.Role -eq 'Tests') {
-            foreach ($requiredName in @($repo.RequiresRepos)) {
-                $requiredRepo = Get-RepoByName -Config $Config -Name $requiredName
-                if ($null -eq $requiredRepo) {
-                    $problems.Add("$($repo.Name): required repo metadata missing for $requiredName")
-                    continue
-                }
-
-                $requiredInfo = Get-RepoStatusInfo -Config $Config -Repo $requiredRepo
-                if (-not $requiredInfo.Healthy) {
-                    $problems.Add("$($repo.Name): required repo $requiredName is not ready ($($requiredInfo.Problem))")
+        if ($env:PATH -notlike "*$($tool.Directory)*") {
+            $env:PATH = '{0};{1}' -f $env:PATH, $tool.Directory
+            if ($PersistMode -eq 'User') {
+                $currentUserPath = [Environment]::GetEnvironmentVariable('Path', 'User')
+                if ($currentUserPath -notlike "*$($tool.Directory)*") {
+                    [Environment]::SetEnvironmentVariable('Path', ('{0};{1}' -f $currentUserPath.TrimEnd(';'), $tool.Directory), 'User')
                 }
             }
         }
     }
-
-    $analysisStarted = Test-Path -LiteralPath $Config.AnalysisRoot
-    if ($analysisStarted) {
-        foreach ($repo in Get-AnalysisRepos -Config $Config) {
-            $info = Get-RepoStatusInfo -Config $Config -Repo $repo
-            if (-not $info.Healthy) {
-                $problems.Add("$($repo.Name): $($info.Problem)")
-            }
-        }
-
-        try {
-            $null = Get-WinMergePath
-        } catch {
-            $problems.Add($_.Exception.Message)
-        }
-
-        foreach ($target in Get-LocalVariantCompareTargets -Config $Config) {
-            if (-not (Test-Path -LiteralPath $target.Path)) {
-                $problems.Add("compare target missing: $($target.Name) [$($target.Path)]")
-            }
-        }
-    }
-
-    if ($problems.Count -gt 0) {
-        $problems | ForEach-Object { Write-Warning $_ }
-        throw 'Workspace validation failed.'
-    }
-
-    Write-Host 'Workspace validation passed.'
 }
 
-function Invoke-InnerSetup {
+function Ensure-RepoClone {
     param(
-        [Parameter(Mandatory)][hashtable]$Config,
-        [Parameter(Mandatory)][hashtable]$Repo
+        [Parameter(Mandatory = $true)]
+        [string]$Root,
+
+        [Parameter(Mandatory = $true)]
+        [hashtable]$Repo
     )
 
-    $path = Get-RepoPath -Config $Config -Repo $Repo
-    if (-not (Test-IsGitRepo -Path $path)) {
-        throw "Build workspace missing or invalid: $path"
+    $repoPath = Get-RepoPath -Root $Root -Repo $Repo
+    Ensure-Directory -Path (Split-Path -Parent $repoPath)
+
+    if (-not (Test-Path -LiteralPath $repoPath -PathType Container)) {
+        $cloneArgs = @('clone')
+        if ($Repo.ContainsKey('HasSubmodules') -and $Repo.HasSubmodules) {
+            $cloneArgs += '--recurse-submodules'
+        }
+        if (-not ($Repo.ContainsKey('BranchOptional') -and $Repo.BranchOptional)) {
+            $cloneArgs += @('--branch', $Repo.Branch)
+        }
+        $cloneArgs += @($Repo.Url, $repoPath)
+        Invoke-Checked -FilePath 'git' -ArgumentList $cloneArgs
+        return $repoPath
     }
 
-    if ($Repo.HasSubmodules) {
-        Update-Submodules -Config $Config -Repo $Repo
+    Invoke-Checked -FilePath 'git' -ArgumentList @('-C', $repoPath, 'fetch', 'origin', '--prune')
+    if (-not $Repo.ContainsKey('Worktrees')) {
+        Invoke-Checked -FilePath 'git' -ArgumentList @('-C', $repoPath, 'checkout', $Repo.Branch)
+        Invoke-Checked -FilePath 'git' -ArgumentList @('-C', $repoPath, 'pull', '--ff-only', 'origin', $Repo.Branch)
+    }
+    if ($Repo.ContainsKey('HasSubmodules') -and $Repo.HasSubmodules) {
+        Invoke-Checked -FilePath 'git' -ArgumentList @('-C', $repoPath, 'submodule', 'update', '--init', '--recursive')
+    }
+    return $repoPath
+}
+
+function Ensure-RootLayout {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Root,
+
+        [Parameter(Mandatory = $true)]
+        [hashtable]$Config,
+
+        [Parameter(Mandatory = $true)]
+        [string]$WorkspaceName
+    )
+
+    Ensure-Directory -Path $Root
+    foreach ($relativePath in @($Config.RootDirectories)) {
+        Ensure-Directory -Path (Join-Path $Root $relativePath)
     }
 
-    Write-Host "Running inner setup for $($Repo.Name)"
-    Write-Log -Config $Config -Message "Inner setup start: $($Repo.Name)"
+    $workspaceRoot = Get-WorkspaceRoot -Root $Root -WorkspaceName $WorkspaceName
+    foreach ($relativePath in @('app', 'artifacts', 'logs', 'scripts', 'state')) {
+        Ensure-Directory -Path (Join-Path $workspaceRoot $relativePath)
+    }
+}
 
-    switch ([string]$Repo.InnerSetupMode) {
-        'WorkspacePs1' {
-            $workspacePs1 = Join-Path $path 'workspace.ps1'
-            if (-not (Test-Path -LiteralPath $workspacePs1)) {
-                throw "Inner setup entrypoint not found: $workspacePs1"
+function Write-WorkspaceBuildWrapper {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Root,
+
+        [Parameter(Mandatory = $true)]
+        [string]$WorkspaceName
+    )
+
+    $workspaceRoot = Get-WorkspaceRoot -Root $Root -WorkspaceName $WorkspaceName
+    $wrapperPath = Join-Path $workspaceRoot '23-build-emule-debug-incremental.cmd'
+    $content = @"
+@ECHO OFF
+pwsh -NoLogo -NoProfile -ExecutionPolicy Bypass -File "$Root\repos\eMule-build\workspace.ps1" build-app -EmuleWorkspaceRoot "$Root"
+"@
+    Set-Content -LiteralPath $wrapperPath -Value $content -Encoding ascii
+}
+
+function Ensure-AppBranches {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$RepoPath,
+
+        [Parameter(Mandatory = $true)]
+        [hashtable]$Config
+    )
+
+    foreach ($worktree in @($Config.AppRepo.Worktrees)) {
+        Invoke-Checked -FilePath 'git' -ArgumentList @('-C', $RepoPath, 'fetch', 'origin', ("refs/heads/{0}:refs/remotes/origin/{0}" -f $worktree.Branch))
+        $branchExists = (& git -C $RepoPath show-ref --verify --quiet ("refs/heads/{0}" -f $worktree.Branch)); $branchExitCode = $LASTEXITCODE
+        if ($branchExitCode -ne 0) {
+            Invoke-Checked -FilePath 'git' -ArgumentList @('-C', $RepoPath, 'branch', '--track', $worktree.Branch, ("origin/{0}" -f $worktree.Branch))
+        }
+    }
+}
+
+function Ensure-AppAnchorCheckout {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$RepoPath,
+
+        [Parameter(Mandatory = $true)]
+        [hashtable]$Config
+    )
+
+    $currentBranch = (& git -C $RepoPath branch --show-current).Trim()
+    if ($currentBranch -ne $Config.AppRepo.Branch) {
+        return
+    }
+
+    $anchorBranch = 'workspace-anchor'
+    $anchorExists = (& git -C $RepoPath show-ref --verify --quiet ("refs/heads/{0}" -f $anchorBranch)); $anchorExitCode = $LASTEXITCODE
+    if ($anchorExitCode -ne 0) {
+        Invoke-Checked -FilePath 'git' -ArgumentList @('-C', $RepoPath, 'branch', $anchorBranch, $Config.AppRepo.Branch)
+    }
+
+    Invoke-Checked -FilePath 'git' -ArgumentList @('-C', $RepoPath, 'checkout', $anchorBranch)
+}
+
+function Ensure-AppWorktrees {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Root,
+
+        [Parameter(Mandatory = $true)]
+        [hashtable]$Config
+    )
+
+    $repoPath = Get-RepoPath -Root $Root -Repo $Config.AppRepo
+    Ensure-AppBranches -RepoPath $repoPath -Config $Config
+    Ensure-AppAnchorCheckout -RepoPath $repoPath -Config $Config
+
+    foreach ($worktree in @($Config.AppRepo.Worktrees)) {
+        $targetPath = Join-Path $Root $worktree.RelativePath
+        Ensure-Directory -Path (Split-Path -Parent $targetPath)
+
+        if (-not (Test-Path -LiteralPath $targetPath -PathType Container)) {
+            Invoke-Checked -FilePath 'git' -ArgumentList @('-C', $repoPath, 'worktree', 'add', $targetPath, $worktree.Branch)
+        } else {
+            Invoke-Checked -FilePath 'git' -ArgumentList @('-C', $targetPath, 'fetch', 'origin', '--prune')
+            Invoke-Checked -FilePath 'git' -ArgumentList @('-C', $targetPath, 'checkout', $worktree.Branch)
+            $isDirty = -not [string]::IsNullOrWhiteSpace((& git -C $targetPath status --short))
+            if ($isDirty) {
+                Write-Warning "Worktree '$targetPath' is dirty; skipping fast-forward for managed branch '$($worktree.Branch)'."
+                continue
             }
-
-            Invoke-Checked -FilePath 'pwsh' -ArgumentList @('-NoLogo', '-NoProfile', '-File', $workspacePs1, 'setup') -WorkingDirectory $path -Label "inner setup $($Repo.Name)"
-        }
-        default {
-            throw "Unsupported inner setup mode for $($Repo.Name): $($Repo.InnerSetupMode)"
+            Invoke-Checked -FilePath 'git' -ArgumentList @('-C', $targetPath, 'merge', '--ff-only', ("refs/remotes/origin/{0}" -f $worktree.Branch))
         }
     }
+}
 
-    Write-Log -Config $Config -Message "Inner setup complete: $($Repo.Name)"
+function Remove-ReparsePoint {
+    param([Parameter(Mandatory = $true)][string]$Path)
+
+    if (-not (Test-Path -LiteralPath $Path)) {
+        return
+    }
+
+    $item = Get-Item -LiteralPath $Path -Force
+    if (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+        Remove-Item -LiteralPath $Path -Recurse -Force
+    }
+}
+
+function Remove-LegacyAppDependencyLinks {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Root,
+
+        [Parameter(Mandatory = $true)]
+        [hashtable]$Config
+    )
+
+    foreach ($worktree in @($Config.AppRepo.Worktrees)) {
+        $worktreeRoot = Join-Path $Root $worktree.RelativePath
+        foreach ($name in @('cryptopp', 'id3lib', 'mbedtls', 'miniupnpc', 'ResizableLib', 'zlib')) {
+            Remove-ReparsePoint -Path (Join-Path $worktreeRoot $name)
+        }
+    }
+}
+
+function Get-AppPropertyOverrides {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Root
+    )
+
+    @(
+        "/p:WorkspaceRoot=$Root\"
+        "/p:CryptoPpRoot=$(Join-Path $Root 'repos\third_party\eMule-cryptopp\')"
+        "/p:Id3libRoot=$(Join-Path $Root 'repos\third_party\eMule-id3lib\')"
+        "/p:MbedTlsRoot=$(Join-Path $Root 'repos\third_party\eMule-mbedtls\')"
+        "/p:MiniUpnpRoot=$(Join-Path $Root 'repos\third_party\eMule-miniupnp\')"
+        "/p:ResizableLibRoot=$(Join-Path $Root 'repos\third_party\eMule-ResizableLib\')"
+        "/p:ZlibRoot=$(Join-Path $Root 'repos\third_party\eMule-zlib\')"
+    )
+}
+
+function Get-AppBuildMatrix {
+    @(
+        @{ Configuration = 'Debug'; Platform = 'x64' }
+        @{ Configuration = 'Release'; Platform = 'x64' }
+        @{ Configuration = 'Debug'; Platform = 'ARM64' }
+        @{ Configuration = 'Release'; Platform = 'ARM64' }
+    )
+}
+
+function Get-TestBuildMatrix {
+    @(
+        @{ Configuration = 'Debug'; Platform = 'x64' }
+        @{ Configuration = 'Release'; Platform = 'x64' }
+    )
+}
+
+function Write-WorkspaceProps {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Root,
+
+        [Parameter(Mandatory = $true)]
+        [hashtable]$Config
+    )
+
+    $propsPath = Get-WorkspacePropsPath -Root $Root -Config $Config
+    $content = @'
+<?xml version="1.0" encoding="utf-8"?>
+<Project ToolsVersion="Current" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <PropertyGroup>
+    <WorkspaceRoot>$([MSBuild]::EnsureTrailingSlash('$(WorkspaceRoot)'))</WorkspaceRoot>
+    <ReposRoot>$(WorkspaceRoot)repos\</ReposRoot>
+    <ThirdPartyRoot>$(ReposRoot)third_party\</ThirdPartyRoot>
+  </PropertyGroup>
+  <ItemDefinitionGroup>
+    <ClCompile>
+      <AdditionalIncludeDirectories>$(ThirdPartyRoot)eMule-cryptopp;$(ThirdPartyRoot)eMule-ResizableLib;$(ThirdPartyRoot)eMule-zlib;$(ThirdPartyRoot)eMule-miniupnp;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+    </ClCompile>
+  </ItemDefinitionGroup>
+</Project>
+'@
+    Set-Content -LiteralPath $propsPath -Value $content -Encoding utf8
+}
+
+function Write-WorkspaceManifest {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Root,
+
+        [Parameter(Mandatory = $true)]
+        [hashtable]$Config,
+
+        [Parameter(Mandatory = $true)]
+        [string]$WorkspaceName
+    )
+
+    $workspaceRoot = Get-WorkspaceRoot -Root $Root -WorkspaceName $WorkspaceName
+    $manifestPath = Join-Path $workspaceRoot 'deps.psd1'
+    $content = @"
+@{
+    EmuleWorkspaceRoot = '..\..'
+    Workspace = @{
+        Name = '$WorkspaceName'
+        AppRepo = @{
+            SeedRepo = @{
+                Name = 'eMule'
+                Path = '..\..\repos\eMule'
+            }
+            Variants = @(
+                @{ Name = 'main'; Path = 'app\eMule-main'; Branch = 'main' }
+                @{ Name = 'bugfix'; Path = 'app\eMule-v0.72a-bugfix'; Branch = 'release/v0.72a-bugfix' }
+                @{ Name = 'build'; Path = 'app\eMule-v0.72a-build'; Branch = 'release/v0.72a-build' }
+            )
+        }
+        Repos = @{
+            Build = '..\..\repos\eMule-build'
+            Tests = '..\..\repos\eMule-build-tests'
+            Tooling = '..\..\repos\eMule-tooling'
+            Remote = '..\..\repos\eMule-remote'
+            ThirdParty = '..\..\repos\third_party'
+        }
+    }
+}
+"@
+    Set-Content -LiteralPath $manifestPath -Value $content -Encoding utf8
+}
+
+function Write-StatusFile {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Root,
+
+        [Parameter(Mandatory = $true)]
+        [hashtable]$Config,
+
+        [Parameter(Mandatory = $true)]
+        [string]$WorkspaceName
+    )
+
+    $workspaceRoot = Get-WorkspaceRoot -Root $Root -WorkspaceName $WorkspaceName
+    $statusPath = Join-Path $workspaceRoot 'state\EMULE-STATUS.md'
+    $repoLines = foreach ($repo in Get-AllRepoConfigs -Config $Config) {
+        $repoPath = Get-RepoPath -Root $Root -Repo $repo
+        $branch = (& git -C $repoPath branch --show-current).Trim()
+        $head = (& git -C $repoPath rev-parse HEAD).Trim()
+        ('- `{0}`: `{1}` @ `{2}`' -f $repo.Name, $branch, $head)
+    }
+    $worktreeLines = foreach ($worktree in @($Config.AppRepo.Worktrees)) {
+        $worktreePath = Join-Path $Root $worktree.RelativePath
+        $head = (& git -C $worktreePath rev-parse HEAD).Trim()
+        ('- `{0}`: `{1}` @ `{2}`' -f $worktree.Name, $worktree.Branch, $head)
+    }
+    $content = @(
+        '# EMULE Status'
+        ''
+        ('- generated_at: `{0}`' -f (Get-Date -Format 'yyyy-MM-dd HH:mm:ss zzz'))
+        ('- workspace: `{0}`' -f $WorkspaceName)
+        ''
+        '## Repos'
+        $repoLines
+        ''
+        '## App Worktrees'
+        $worktreeLines
+    )
+    Set-Content -LiteralPath $statusPath -Value $content -Encoding utf8
+}
+
+function Overlay-SeedArtifacts {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Root,
+
+        [Parameter(Mandatory = $true)]
+        [hashtable]$Config,
+
+        [string]$SeedRoot
+    )
+
+    if ([string]::IsNullOrWhiteSpace($SeedRoot)) {
+        return
+    }
+
+    $resolvedSeedRoot = [System.IO.Path]::GetFullPath($SeedRoot)
+    if (-not (Test-Path -LiteralPath $resolvedSeedRoot -PathType Container)) {
+        throw "Artifacts seed root '$resolvedSeedRoot' does not exist."
+    }
+
+    foreach ($repo in @($Config.ThirdPartyRepos)) {
+        $sourcePath = Join-Path $resolvedSeedRoot $repo.Name
+        if (-not (Test-Path -LiteralPath $sourcePath -PathType Container)) {
+            continue
+        }
+
+        $destinationPath = Get-RepoPath -Root $Root -Repo $repo
+        Invoke-RobocopyMirror -SourcePath $sourcePath -DestinationPath $destinationPath
+    }
+}
+
+function Remove-LegacyAppWorktrees {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Root,
+
+        [Parameter(Mandatory = $true)]
+        [hashtable]$Config
+    )
+
+    $managedWorktreePaths = @($Config.AppRepo.Worktrees | ForEach-Object { [System.IO.Path]::GetFullPath((Join-Path $Root $_.RelativePath)) })
+    if ($managedWorktreePaths.Count -eq 0) {
+        return
+    }
+
+    $appRoot = Split-Path -Parent $managedWorktreePaths[0]
+    if (-not (Test-Path -LiteralPath $appRoot -PathType Container)) {
+        return
+    }
+
+    $repoPath = Get-RepoPath -Root $Root -Repo $Config.AppRepo
+    foreach ($entry in Get-ChildItem -LiteralPath $appRoot -Directory -Force) {
+        $fullPath = [System.IO.Path]::GetFullPath($entry.FullName)
+        if ($managedWorktreePaths -contains $fullPath) {
+            continue
+        }
+
+        $gitMetadataPath = Join-Path $fullPath '.git'
+        if (Test-Path -LiteralPath $gitMetadataPath) {
+            Invoke-Checked -FilePath 'git' -ArgumentList @('-C', $repoPath, 'worktree', 'remove', '--force', $fullPath)
+            continue
+        }
+
+        Remove-Item -LiteralPath $fullPath -Recurse -Force
+    }
+
+    Invoke-Checked -FilePath 'git' -ArgumentList @('-C', $repoPath, 'worktree', 'prune')
+}
+
+function Get-RepoStatusObject {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$RepoPath,
+
+        [Parameter(Mandatory = $true)]
+        [string]$Name
+    )
+
+    [pscustomobject]@{
+        Name = $Name
+        Path = $RepoPath
+        Branch = (& git -C $RepoPath branch --show-current).Trim()
+        Head = (& git -C $RepoPath rev-parse HEAD).Trim()
+        Dirty = -not [string]::IsNullOrWhiteSpace((& git -C $RepoPath status --short))
+    }
 }
 
 function Invoke-Init {
-    param([Parameter(Mandatory)][hashtable]$Config)
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Root,
 
-    Assert-Prereqs -Config $Config
-    Ensure-Directory -Path $Config.TargetRoot
+        [Parameter(Mandatory = $true)]
+        [hashtable]$Config,
 
-    $failures = New-Object System.Collections.Generic.List[string]
-    foreach ($repo in $Config.Repos) {
-        try {
-            Clone-Repo -Config $Config -Repo $repo
-        } catch {
-            $failures.Add("$($repo.Name): $($_.Exception.Message)")
-        }
+        [Parameter(Mandatory = $true)]
+        [string]$WorkspaceName,
+
+        [string]$SeedRoot
+    )
+
+    Ensure-RootLayout -Root $Root -Config $Config -WorkspaceName $WorkspaceName
+    foreach ($repo in Get-AllRepoConfigs -Config $Config) {
+        $repoPath = Ensure-RepoClone -Root $Root -Repo $repo
+        Write-Log -Root $Root -Config $Config -Message ("Repo ready: {0} [{1}]" -f $repo.Name, $repoPath)
     }
-
-    if ($failures.Count -gt 0) {
-        $failures | ForEach-Object { Write-Warning $_ }
-        throw 'One or more repositories failed to initialize.'
-    }
-}
-
-function Invoke-SyncAll {
-    param([Parameter(Mandatory)][hashtable]$Config)
-
-    Assert-Prereqs -Config $Config
-    Ensure-Directory -Path $Config.TargetRoot
-
-    $failures = New-Object System.Collections.Generic.List[string]
-    foreach ($repo in $Config.Repos) {
-        try {
-            $result = Sync-Repo -Config $Config -Repo $repo
-            if ($result.Result -eq 'blocked') {
-                $failures.Add("$($repo.Name): $($result.Reason)")
-            }
-        } catch {
-            $failures.Add("$($repo.Name): $($_.Exception.Message)")
-        }
-    }
-
-    if ($failures.Count -gt 0) {
-        $failures | ForEach-Object { Write-Warning $_ }
-        throw 'One or more repositories failed to sync cleanly.'
-    }
+    Overlay-SeedArtifacts -Root $Root -Config $Config -SeedRoot $SeedRoot
+    Write-WorkspaceProps -Root $Root -Config $Config
+    Write-WorkspaceManifest -Root $Root -Config $Config -WorkspaceName $WorkspaceName
+    Write-WorkspaceBuildWrapper -Root $Root -WorkspaceName $WorkspaceName
+    Write-CompareLaunchers -Root $Root -Config $Config
 }
 
 function Invoke-Materialize {
-    param([Parameter(Mandatory)][hashtable]$Config)
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Root,
 
-    Assert-Prereqs -Config $Config -RequireCMake
-    Ensure-Directory -Path $Config.TargetRoot
+        [Parameter(Mandatory = $true)]
+        [hashtable]$Config,
 
-    $orderedNames = @('eMule-build-v0.60', 'eMule-build-v0.72', 'eMule-remote', 'eMule-build-tests')
-    foreach ($name in $orderedNames) {
-        $repo = Get-RepoByName -Config $Config -Name $name
-        if ($null -eq $repo) {
+        [Parameter(Mandatory = $true)]
+        [string]$WorkspaceName,
+
+        [string]$SeedRoot
+    )
+
+    Invoke-Init -Root $Root -Config $Config -WorkspaceName $WorkspaceName -SeedRoot $SeedRoot
+    Ensure-AppWorktrees -Root $Root -Config $Config
+    Remove-LegacyAppWorktrees -Root $Root -Config $Config
+    Remove-LegacyAppDependencyLinks -Root $Root -Config $Config
+    Write-CompareLaunchers -Root $Root -Config $Config
+    Write-StatusFile -Root $Root -Config $Config -WorkspaceName $WorkspaceName
+    Write-Log -Root $Root -Config $Config -Message 'Materialize complete.'
+}
+
+function Invoke-Status {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Root,
+
+        [Parameter(Mandatory = $true)]
+        [hashtable]$Config
+    )
+
+    foreach ($repo in Get-AllRepoConfigs -Config $Config) {
+        $repoPath = Get-RepoPath -Root $Root -Repo $repo
+        if (-not (Test-Path -LiteralPath $repoPath -PathType Container)) {
+            Write-Host ("[missing] {0} -> {1}" -f $repo.Name, $repoPath)
             continue
         }
 
-        Assert-RepoHealthyForMaterialize -Config $Config -Repo $repo
+        $status = Get-RepoStatusObject -RepoPath $repoPath -Name $repo.Name
+        Write-Host ("[{0}] {1} @ {2} dirty={3}" -f $status.Name, $status.Branch, $status.Head, $status.Dirty)
+    }
+}
 
-        if ($repo.Role -eq 'BuildWorkspace') {
-            Ensure-ExpectedBranches -Config $Config -Repo $repo
-        }
+function Invoke-Validate {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Root,
 
-        if ($repo.Name -eq 'eMule-build-tests') {
-            foreach ($requiredName in @($repo.RequiresRepos)) {
-                $requiredRepo = Get-RepoByName -Config $Config -Name $requiredName
-                if ($null -eq $requiredRepo) {
-                    throw "$($repo.Name) requires missing repo metadata for $requiredName."
-                }
+        [Parameter(Mandatory = $true)]
+        [hashtable]$Config,
 
-                $requiredInfo = Get-RepoStatusInfo -Config $Config -Repo $requiredRepo
-                if (-not $requiredInfo.Healthy) {
-                    throw "$($repo.Name) requires $requiredName on branch $($requiredInfo.BranchExpected)."
-                }
-            }
+        [Parameter(Mandatory = $true)]
+        [string]$WorkspaceName
+    )
 
-            Write-Host "Tests repo $($repo.Name) is cloned and aligned; no inner materialization entrypoint is defined."
-            Write-Log -Config $Config -Message "Materialize complete: $($repo.Name) (clone-only tests repo)"
-            continue
-        }
-
-        if ($repo.SupportsInnerSetup) {
-            Invoke-InnerSetup -Config $Config -Repo $repo
-        }
+    $workspaceRoot = Get-WorkspaceRoot -Root $Root -WorkspaceName $WorkspaceName
+    $requiredPaths = @(
+        $workspaceRoot
+        (Join-Path $workspaceRoot 'deps.psd1')
+        (Get-WorkspacePropsPath -Root $Root -Config $Config)
+        (Join-Path $workspaceRoot 'state\EMULE-STATUS.md')
+    )
+    foreach ($worktree in @($Config.AppRepo.Worktrees)) {
+        $requiredPaths += (Join-Path $Root $worktree.RelativePath)
     }
 
-    Ensure-Directory -Path $Config.AnalysisRoot
+    foreach ($repo in Get-AllRepoConfigs -Config $Config) {
+        $requiredPaths += (Get-RepoPath -Root $Root -Repo $repo)
+    }
+    $requiredPaths += (Get-CompareOutputRoot -Root $Root)
+
+    $missing = @($requiredPaths | Where-Object { -not (Test-Path -LiteralPath $_) })
+    if ($missing.Count -gt 0) {
+        throw ("Validation failed. Missing paths:`n{0}" -f ($missing -join [Environment]::NewLine))
+    }
+
+    $null = Get-WinMergePath
+    foreach ($target in Get-LocalVariantCompareTargets -Root $Root -Config $Config) {
+        if (-not (Test-Path -LiteralPath $target.Path)) {
+            throw ("Validation failed. Compare target missing: {0} [{1}]" -f $target.Name, $target.Path)
+        }
+    }
     foreach ($repo in Get-AnalysisRepos -Config $Config) {
-        $result = Sync-Repo -Config $Config -Repo $repo
-        if ($result.Result -eq 'blocked') {
-            throw "Analysis repo $($repo.Name) is blocked: $($result.Reason)"
+        $compareRoot = Get-AnalysisCompareRoot -Root $Root -Repo $repo
+        if (-not (Test-Path -LiteralPath $compareRoot)) {
+            throw ("Validation failed. Analysis compare target missing: {0} [{1}]" -f $repo.Name, $compareRoot)
         }
     }
 
-    Write-CompareLaunchers -Config $Config
+    Write-Host 'Validation passed.'
 }
 
-function Invoke-EnsurePath {
-    param([Parameter(Mandatory)][hashtable]$Config)
+function Remove-StaleGeneratedArtifacts {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$RepoPath,
 
-    $results = Ensure-RequiredTools -ToolNames @('pwsh', 'git', 'gh', 'cmake') -Config $Config -PersistMode $Persist
-    $results |
-        Select-Object Name, FoundOnPath, SessionAdded, Persisted, ResolvedPath |
-        Format-Table -AutoSize
-}
+        [Parameter(Mandatory = $true)]
+        [ValidateSet('zlib', 'mbedtls')]
+        [string]$Kind
+    )
 
-function Show-Menu {
-    Write-Host ''
-    Write-Host 'eMulebb setup'
-    Write-Host '1. status'
-    Write-Host '2. validate'
-    Write-Host '3. validate-full'
-    Write-Host '4. init'
-    Write-Host '5. sync'
-    Write-Host '6. materialize'
-    Write-Host '7. ensure-path (session)'
-    Write-Host '8. ensure-path (session + user)'
-    Write-Host '9. compare'
-    Write-Host '10. exit'
-    Write-Host ''
-}
+    $paths = switch ($Kind) {
+        'zlib' { @((Join-Path $RepoPath 'cmake-build-x64')) }
+        'mbedtls' { @((Join-Path $RepoPath 'visualc\VS2017-x64'), (Join-Path $RepoPath 'visualc\VS2017\x64')) }
+    }
 
-function Resolve-InteractiveSelection {
-    while ($true) {
-        Show-Menu
-        $choice = Read-Host 'Select an action'
-        switch ($choice) {
-            '1' { return @{ Command = 'status'; Persist = 'None' } }
-            '2' { return @{ Command = 'validate'; Persist = 'None' } }
-            '3' { return @{ Command = 'validate-full'; Persist = 'None' } }
-            '4' { return @{ Command = 'init'; Persist = 'None' } }
-            '5' { return @{ Command = 'sync'; Persist = 'None' } }
-            '6' { return @{ Command = 'materialize'; Persist = 'None' } }
-            '7' { return @{ Command = 'ensure-path'; Persist = 'None' } }
-            '8' { return @{ Command = 'ensure-path'; Persist = 'User' } }
-            '9' { return @{ Command = 'compare'; Persist = 'None' } }
-            '10' { return @{ Command = 'exit'; Persist = 'None' } }
-            default { Write-Warning 'Choose 1-10.' }
+    foreach ($path in $paths) {
+        if (Test-Path -LiteralPath $path) {
+            Remove-Item -LiteralPath $path -Recurse -Force
         }
     }
 }
 
-$config = Import-Config
+function Invoke-BuildLibs {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Root,
 
-if ([string]::IsNullOrWhiteSpace($Command)) {
-    $selection = Resolve-InteractiveSelection
-    if ($selection.Command -eq 'exit') {
-        return
-    }
+        [Parameter(Mandatory = $true)]
+        [hashtable]$Config
+    )
 
-    $Command = $selection.Command
-    $Persist = $selection.Persist
+    Invoke-BuildRepoCommand -Root $Root -Config $Config -BuildCommand 'build-libs'
 }
+
+function Invoke-BuildApp {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Root,
+
+        [Parameter(Mandatory = $true)]
+        [hashtable]$Config
+    )
+
+    Invoke-BuildRepoCommand -Root $Root -Config $Config -BuildCommand 'build-app' -WorkspaceName $Config.DefaultWorkspaceName
+}
+
+function Invoke-BuildTests {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Root,
+
+        [Parameter(Mandatory = $true)]
+        [hashtable]$Config,
+
+        [Parameter(Mandatory = $true)]
+        [string]$WorkspaceName
+    )
+
+    Invoke-BuildRepoCommand -Root $Root -Config $Config -BuildCommand 'build-tests' -WorkspaceName $WorkspaceName
+}
+
+function Invoke-TestRun {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Root,
+
+        [Parameter(Mandatory = $true)]
+        [string]$WorkspaceName
+    )
+
+    Invoke-BuildRepoCommand -Root $Root -Config $Config -BuildCommand 'test' -WorkspaceName $WorkspaceName
+}
+
+function Invoke-Full {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Root,
+
+        [Parameter(Mandatory = $true)]
+        [hashtable]$Config,
+
+        [Parameter(Mandatory = $true)]
+        [string]$WorkspaceName,
+
+        [string]$SeedRoot
+    )
+
+    Invoke-Materialize -Root $Root -Config $Config -WorkspaceName $WorkspaceName -SeedRoot $SeedRoot
+    Invoke-BuildRepoCommand -Root $Root -Config $Config -BuildCommand 'full' -WorkspaceName $WorkspaceName
+}
+
+$config = Import-SetupConfig
+$resolvedRoot = Resolve-EmuleWorkspaceRoot -Config $config -OverrideRoot $EmuleWorkspaceRoot
+$resolvedWorkspaceName = Resolve-WorkspaceName -Config $config -OverrideName $WorkspaceName
 
 switch ($Command) {
-    'init' { Invoke-Init -Config $config }
-    'sync' { Invoke-SyncAll -Config $config }
-    'status' { Show-Status -Config $config }
-    'validate' { Validate-Workspace -Config $config }
-    'validate-full' { Validate-Workspace -Config $config -Full }
-    'materialize' { Invoke-Materialize -Config $config }
-    'ensure-path' { Invoke-EnsurePath -Config $config }
-    'compare' { Invoke-Compare -Config $config -Key $CompareKey }
-    default { throw "Unsupported command: $Command" }
+    'ensure-path' { Ensure-RequiredTools -PersistMode $Persist; break }
+    'sync' { Invoke-Init -Root $resolvedRoot -Config $config -WorkspaceName $resolvedWorkspaceName -SeedRoot $ArtifactsSeedRoot; break }
+    'init' { Invoke-Init -Root $resolvedRoot -Config $config -WorkspaceName $resolvedWorkspaceName -SeedRoot $ArtifactsSeedRoot; break }
+    'materialize' { Invoke-Materialize -Root $resolvedRoot -Config $config -WorkspaceName $resolvedWorkspaceName -SeedRoot $ArtifactsSeedRoot; break }
+    'status' { Invoke-Status -Root $resolvedRoot -Config $config; break }
+    'validate' { Invoke-Validate -Root $resolvedRoot -Config $config -WorkspaceName $resolvedWorkspaceName; break }
+    'compare' { Invoke-Compare -Root $resolvedRoot -Config $config -Key $CompareKey; break }
+    'build-libs' { Invoke-BuildLibs -Root $resolvedRoot -Config $config; break }
+    'build-app' { Invoke-BuildApp -Root $resolvedRoot -Config $config; break }
+    'build-tests' { Invoke-BuildTests -Root $resolvedRoot -Config $config -WorkspaceName $resolvedWorkspaceName; break }
+    'test' { Invoke-TestRun -Root $resolvedRoot -WorkspaceName $resolvedWorkspaceName; break }
+    'full' { Invoke-Full -Root $resolvedRoot -Config $config -WorkspaceName $resolvedWorkspaceName -SeedRoot $ArtifactsSeedRoot; break }
+    default { throw "Unsupported command '$Command'." }
 }
