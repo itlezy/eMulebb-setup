@@ -30,7 +30,6 @@ EMULE_WORKSPACE_ROOT\
       artifacts\
       scripts\
       state\
-        EMULE-STATUS.md
   analysis\
     emuleai\
     community-0.60\

@@ -980,46 +980,6 @@ function Write-WorkspaceManifest {
     Set-Content -LiteralPath $manifestPath -Value $content -Encoding utf8
 }
 
-function Write-StatusFile {
-    param(
-        [Parameter(Mandatory = $true)]
-        [string]$Root,
-
-        [Parameter(Mandatory = $true)]
-        [hashtable]$Config,
-
-        [Parameter(Mandatory = $true)]
-        [string]$WorkspaceName
-    )
-
-    $workspaceRoot = Get-WorkspaceRoot -Root $Root -WorkspaceName $WorkspaceName
-    $statusPath = Join-Path $workspaceRoot 'state\EMULE-STATUS.md'
-    $repoLines = foreach ($repo in Get-AllRepoConfigs -Config $Config) {
-        $repoPath = Get-RepoPath -Root $Root -Repo $repo
-        $branch = (& git -C $repoPath branch --show-current).Trim()
-        $head = (& git -C $repoPath rev-parse HEAD).Trim()
-        ('- `{0}`: `{1}` @ `{2}`' -f $repo.Name, $branch, $head)
-    }
-    $worktreeLines = foreach ($worktree in @($Config.AppRepo.Worktrees)) {
-        $worktreePath = Join-Path $Root $worktree.RelativePath
-        $head = (& git -C $worktreePath rev-parse HEAD).Trim()
-        ('- `{0}`: `{1}` @ `{2}`' -f $worktree.Name, $worktree.Branch, $head)
-    }
-    $content = @(
-        '# EMULE Status'
-        ''
-        ('- generated_at: `{0}`' -f (Get-Date -Format 'yyyy-MM-dd HH:mm:ss zzz'))
-        ('- workspace: `{0}`' -f $WorkspaceName)
-        ''
-        '## Repos'
-        $repoLines
-        ''
-        '## App Worktrees'
-        $worktreeLines
-    )
-    Set-Content -LiteralPath $statusPath -Value $content -Encoding utf8
-}
-
 function Overlay-SeedArtifacts {
     param(
         [Parameter(Mandatory = $true)]
@@ -1152,7 +1112,10 @@ function Invoke-Materialize {
     Remove-LegacyAppWorktrees -Root $Root -Config $Config
     Remove-LegacyAppDependencyLinks -Root $Root -Config $Config
     Write-CompareLaunchers -Root $Root -Config $Config
-    Write-StatusFile -Root $Root -Config $Config -WorkspaceName $WorkspaceName
+    $legacyStatusPath = Join-Path (Get-WorkspaceRoot -Root $Root -WorkspaceName $WorkspaceName) 'state\EMULE-STATUS.md'
+    if (Test-Path -LiteralPath $legacyStatusPath -PathType Leaf) {
+        Remove-Item -LiteralPath $legacyStatusPath -Force
+    }
     Write-Log -Root $Root -Config $Config -Message 'Materialize complete.'
 }
 
@@ -1194,7 +1157,6 @@ function Invoke-Validate {
         $workspaceRoot
         (Join-Path $workspaceRoot 'deps.psd1')
         (Get-WorkspacePropsPath -Root $Root -Config $Config)
-        (Join-Path $workspaceRoot 'state\EMULE-STATUS.md')
     )
     foreach ($worktree in @($Config.AppRepo.Worktrees)) {
         $requiredPaths += (Join-Path $Root $worktree.RelativePath)
