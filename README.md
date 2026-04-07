@@ -81,3 +81,20 @@ pwsh -File .\workspace.ps1 full        -EmuleWorkspaceRoot <workspace-root>
 - `materialize` actively manages only the canonical 0.72a app worktrees and removes legacy app worktrees from the workspace app directory.
 - `compare` launches WinMerge for built-in presets that compare `emuleai`, `community-0.60`, `community-0.72`, and `mods-archive` against the canonical local 0.72a worktrees.
 - `-ArtifactsSeedRoot` is optional and is intended for local validation flows where dependency build outputs should be copied from an existing `third_party` tree.
+
+## Documentation Map
+
+This README is the authoritative description of the canonical workspace layout
+and materialization model.
+
+Use the repo-local READMEs for operational detail:
+
+- `repos\eMule-build\README.md` for build and test orchestration
+- `repos\eMule-build-tests\README.md` for the shared harness model
+- `repos\eMule-tooling\README.md` and `repos\eMule-tooling\docs\INDEX.md` for
+  deeper design notes, audits, and planning artifacts
+- `repos\eMule-remote\README.md` for the companion app runtime surface
+
+Repo-local `AGENTS.md` files are intentionally agent-facing and should stay
+short. They should capture repo-specific editing rules, not duplicate the full
+workspace contract documented here.
