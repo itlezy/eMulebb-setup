@@ -89,6 +89,7 @@ and materialization model.
 
 Use the repo-local READMEs for operational detail:
 
+- `BRANCHING.md` for the active branching and promotion strategy
 - `repos\eMule-build\README.md` for build and test orchestration
 - `repos\eMule-build-tests\README.md` for the shared harness model
 - `repos\eMule-tooling\README.md` and `repos\eMule-tooling\docs\INDEX.md` for
