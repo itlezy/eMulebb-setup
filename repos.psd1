@@ -129,7 +129,7 @@
             Name = 'eMule-zlib'
             Url = 'https://github.com/itlezy/eMule-zlib.git'
             RelativePath = 'repos\third_party\eMule-zlib'
-            Branch = 'emule-build-v0.72a'
+            Branch = 'zlib-v1.3.2-emule'
         }
     )
 }
