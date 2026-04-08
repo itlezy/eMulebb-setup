@@ -727,7 +727,8 @@ function Ensure-AppAnchorCheckout {
         [hashtable]$Config
     )
 
-    $currentBranch = (& git -C $RepoPath branch --show-current).Trim()
+    $currentBranchOutput = & git -C $RepoPath branch --show-current
+    $currentBranch = if ([string]::IsNullOrWhiteSpace($currentBranchOutput)) { '' } else { $currentBranchOutput.Trim() }
     if ($currentBranch -ne $Config.AppRepo.Branch) {
         return
     }
@@ -979,17 +980,23 @@ function Get-RepoStatusObject {
         [string]$Name
     )
 
-    $branch = (& git -C $RepoPath branch --show-current).Trim()
+    $branchOutput = & git -C $RepoPath branch --show-current
+    $branch = if ([string]::IsNullOrWhiteSpace($branchOutput)) { '' } else { $branchOutput.Trim() }
     if ([string]::IsNullOrWhiteSpace($branch)) {
         $branch = '(detached)'
     }
+
+    $headOutput = & git -C $RepoPath rev-parse HEAD
+    $head = if ([string]::IsNullOrWhiteSpace($headOutput)) { '(unknown)' } else { $headOutput.Trim() }
+
+    $statusOutput = & git -C $RepoPath status --short
 
     [pscustomobject]@{
         Name = $Name
         Path = $RepoPath
         Branch = $branch
-        Head = (& git -C $RepoPath rev-parse HEAD).Trim()
-        Dirty = -not [string]::IsNullOrWhiteSpace((& git -C $RepoPath status --short))
+        Head = $head
+        Dirty = -not [string]::IsNullOrWhiteSpace($statusOutput)
     }
 }
 
