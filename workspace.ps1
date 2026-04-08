@@ -732,13 +732,7 @@ function Ensure-AppAnchorCheckout {
         return
     }
 
-    $anchorBranch = 'workspace-anchor'
-    $anchorExists = (& git -C $RepoPath show-ref --verify --quiet ("refs/heads/{0}" -f $anchorBranch)); $anchorExitCode = $LASTEXITCODE
-    if ($anchorExitCode -ne 0) {
-        Invoke-Checked -FilePath 'git' -ArgumentList @('-C', $RepoPath, 'branch', $anchorBranch, $Config.AppRepo.Branch)
-    }
-
-    Invoke-Checked -FilePath 'git' -ArgumentList @('-C', $RepoPath, 'checkout', $anchorBranch)
+    Invoke-Checked -FilePath 'git' -ArgumentList @('-C', $RepoPath, 'checkout', '--detach', ("refs/remotes/origin/{0}" -f $Config.AppRepo.Branch))
 }
 
 function Ensure-AppWorktrees {
@@ -985,10 +979,15 @@ function Get-RepoStatusObject {
         [string]$Name
     )
 
+    $branch = (& git -C $RepoPath branch --show-current).Trim()
+    if ([string]::IsNullOrWhiteSpace($branch)) {
+        $branch = '(detached)'
+    }
+
     [pscustomobject]@{
         Name = $Name
         Path = $RepoPath
-        Branch = (& git -C $RepoPath branch --show-current).Trim()
+        Branch = $branch
         Head = (& git -C $RepoPath rev-parse HEAD).Trim()
         Dirty = -not [string]::IsNullOrWhiteSpace((& git -C $RepoPath status --short))
     }
