@@ -67,7 +67,7 @@
             Name = 'emuleai'
             Url = 'https://github.com/eMuleAI/eMuleAI.git'
             RelativePath = 'analysis\emuleai'
-            Branch = 'miniupnpc-master-emule'
+            Branch = 'master'
             CompareSubdir = 'srchybrid'
         }
         @{
