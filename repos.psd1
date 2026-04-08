@@ -104,7 +104,7 @@
             Name = 'eMule-id3lib'
             Url = 'https://github.com/itlezy/eMule-id3lib.git'
             RelativePath = 'repos\third_party\eMule-id3lib'
-            Branch = 'emule-build-v0.72a'
+            Branch = 'id3lib-v3.9.1-emule'
         }
         @{
             Name = 'eMule-mbedtls'
