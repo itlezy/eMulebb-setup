@@ -117,7 +117,7 @@
             Name = 'eMule-miniupnp'
             Url = 'https://github.com/itlezy/eMule-miniupnp.git'
             RelativePath = 'repos\third_party\eMule-miniupnp'
-            Branch = 'master'
+            Branch = 'miniupnpc-master-emule'
         }
         @{
             Name = 'eMule-ResizableLib'
