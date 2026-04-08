@@ -110,7 +110,7 @@
             Name = 'eMule-mbedtls'
             Url = 'https://github.com/itlezy/eMule-mbedtls.git'
             RelativePath = 'repos\third_party\eMule-mbedtls'
-            Branch = 'emule-build-v0.72a'
+            Branch = 'ResizableLib-bebab50-emule'
             HasSubmodules = $true
         }
         @{
