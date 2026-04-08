@@ -23,6 +23,12 @@
                 Active = $true
             }
             @{
+                Name = 'oracle'
+                Branch = 'oracle/v0.72a-build'
+                RelativePath = 'workspaces\v0.72a\app\eMule-v0.72a-oracle'
+                Active = $true
+            }
+            @{
                 Name = 'build'
                 Branch = 'release/v0.72a-build'
                 RelativePath = 'workspaces\v0.72a\app\eMule-v0.72a-build'

@@ -25,6 +25,7 @@ EMULE_WORKSPACE_ROOT\
       deps.psd1
       app\
         eMule-main\
+        eMule-v0.72a-oracle\
         eMule-v0.72a-build\
         eMule-v0.72a-bugfix\
       artifacts\
@@ -72,7 +73,7 @@ pwsh -File .\repos\eMule-build\workspace.ps1 full        -EmuleWorkspaceRoot <wo
 ## Notes
 
 - `EMULE_WORKSPACE_ROOT` may be provided with `-EmuleWorkspaceRoot` or the `EMULE_WORKSPACE_ROOT` environment variable.
-- `materialize` creates the canonical repo pool, the `v0.72a` workspace manifest, the shared workspace props file, and the three active app worktrees.
+- `materialize` creates the canonical repo pool, the `v0.72a` workspace manifest, the shared workspace props file, and the managed app worktrees for `main`, `oracle`, `build`, and `bugfix`.
 - `materialize` also clones the comparison repos under `analysis` and regenerates the WinMerge launchers under `analysis\compare`.
 - The app repo is canonical under `repos\eMule`; active 0.72 series work is done in worktrees under `workspaces\v0.72a\app`.
 - `repos\eMule-build` owns the canonical build, test, coverage, and live-diff orchestration.

@@ -885,6 +885,7 @@ function Write-WorkspaceManifest {
             }
             Variants = @(
                 @{ Name = 'main'; Path = 'app\eMule-main'; Branch = 'main' }
+                @{ Name = 'oracle'; Path = 'app\eMule-v0.72a-oracle'; Branch = 'oracle/v0.72a-build' }
                 @{ Name = 'bugfix'; Path = 'app\eMule-v0.72a-bugfix'; Branch = 'release/v0.72a-bugfix' }
                 @{ Name = 'build'; Path = 'app\eMule-v0.72a-build'; Branch = 'release/v0.72a-build' }
             )
