@@ -98,7 +98,7 @@
             Name = 'eMule-cryptopp'
             Url = 'https://github.com/itlezy/eMule-cryptopp.git'
             RelativePath = 'repos\third_party\eMule-cryptopp'
-            Branch = 'emule-build-v0.72a'
+            Branch = 'CRYPTOPP_8_4_0-eMule'
         }
         @{
             Name = 'eMule-id3lib'
