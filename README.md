@@ -42,7 +42,7 @@ EMULE_WORKSPACE_ROOT\
 
 ## Prerequisites
 
-- `pwsh` 7+
+- `pwsh` 7.6+
 - `git`
 - `gh` authenticated against GitHub
 - `cmake` available on `PATH` or discoverable by the helper
@@ -73,13 +73,17 @@ pwsh -File .\repos\eMule-build\workspace.ps1 full        -EmuleWorkspaceRoot <wo
 ## Notes
 
 - `EMULE_WORKSPACE_ROOT` may be provided with `-EmuleWorkspaceRoot` or the `EMULE_WORKSPACE_ROOT` environment variable.
+- `materialize` is a bootstrap-only command for a new empty workspace root. It refuses to run against an already populated workspace root.
 - `materialize` creates the canonical repo pool, the `v0.72a` workspace manifest, the shared workspace props file, and the managed app worktrees for `main`, `oracle`, `build`, and `bugfix`.
 - `materialize` also clones the comparison repos under `analysis` and regenerates the WinMerge launchers under `analysis\compare`.
+- `materialize` installs the centralized shared workspace hook setup for `eMule-build`, `eMule-build-tests`, `eMule-tooling`, and the managed app worktrees.
+- After a successful `materialize`, `EMULE_WORKSPACE_ROOT` is set for the current process and persisted at the user environment level.
 - The app repo is canonical under `repos\eMule`; active 0.72 series work is done in worktrees under `workspaces\v0.72a\app`.
 - `repos\eMule-build` owns the canonical build, test, coverage, and live-diff orchestration.
 - `eMulebb-setup` is the front-door workspace helper only; it does not provide build or test commands.
 - The tests repo is expected on `main`.
 - `materialize` actively manages only the canonical 0.72a app worktrees and removes legacy app worktrees from the workspace app directory.
+- `validate` now checks the setup-owned layout and shared hook wiring, then delegates to `repos\eMule-build\workspace.ps1 validate` for downstream workspace policy validation.
 - `compare` launches WinMerge for built-in presets that compare `emuleai`, `community-0.60`, `community-0.72`, and `mods-archive` against the canonical local 0.72a worktrees.
 - `-ArtifactsSeedRoot` is optional and is intended for local validation flows where dependency build outputs should be copied from an existing `third_party` tree.
 

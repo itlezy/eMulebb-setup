@@ -1,4 +1,4 @@
-#Requires -Version 7.2
+#Requires -Version 7.6
 [CmdletBinding()]
 param(
     [Parameter(Position = 0)]
@@ -93,6 +93,28 @@ function Ensure-Directory {
     if (-not (Test-Path -LiteralPath $Path -PathType Container)) {
         $null = New-Item -ItemType Directory -Force -Path $Path
     }
+}
+
+function Set-WorkspaceRootEnvironment {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Root
+    )
+
+    $resolvedRoot = [System.IO.Path]::GetFullPath($Root)
+    $env:EMULE_WORKSPACE_ROOT = $resolvedRoot
+    [Environment]::SetEnvironmentVariable('EMULE_WORKSPACE_ROOT', $resolvedRoot, 'User')
+}
+
+function Test-DirectoryEmpty {
+    param([Parameter(Mandatory = $true)][string]$Path)
+
+    if (-not (Test-Path -LiteralPath $Path -PathType Container)) {
+        return $true
+    }
+
+    $entries = @(Get-ChildItem -LiteralPath $Path -Force)
+    return ($entries.Count -eq 0)
 }
 
 function Invoke-Checked {
@@ -263,6 +285,35 @@ function Get-AllRepoConfigs {
     param([Parameter(Mandatory = $true)][hashtable]$Config)
 
     @($Config.AppRepo) + @($Config.Repos) + @($Config.AnalysisRepos) + @($Config.ThirdPartyRepos)
+}
+
+function Get-HookInstallTargets {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Root,
+
+        [Parameter(Mandatory = $true)]
+        [hashtable]$Config
+    )
+
+    $targets = [System.Collections.Generic.List[string]]::new()
+    foreach ($repo in @($Config.Repos | Where-Object { $_.Name -in @('eMule-build', 'eMule-build-tests', 'eMule-tooling') })) {
+        $targets.Add((Get-RepoPath -Root $Root -Repo $repo)) | Out-Null
+    }
+    foreach ($worktree in @($Config.AppRepo.Worktrees)) {
+        $targets.Add((Join-Path $Root $worktree.RelativePath)) | Out-Null
+    }
+
+    $targets.ToArray()
+}
+
+function Get-ExpectedSharedHooksPath {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Root
+    )
+
+    [System.IO.Path]::GetFullPath((Join-Path $Root 'repos\eMule-tooling\hooks'))
 }
 
 function Get-AnalysisRepos {
@@ -700,6 +751,23 @@ function Ensure-RootLayout {
     }
 }
 
+function Assert-MaterializeBootstrapRoot {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Root
+    )
+
+    if (-not (Test-Path -LiteralPath $Root -PathType Container)) {
+        return
+    }
+
+    if (Test-DirectoryEmpty -Path $Root) {
+        return
+    }
+
+    throw ("Materialize expects a new empty workspace root. Refusing to use existing populated root '{0}'. Use status, validate, or sync for an existing workspace." -f $Root)
+}
+
 function Ensure-AppBranches {
     param(
         [Parameter(Mandatory = $true)]
@@ -1001,6 +1069,82 @@ function Get-RepoStatusObject {
     }
 }
 
+function Install-WorkspaceHooks {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Root,
+
+        [Parameter(Mandatory = $true)]
+        [hashtable]$Config
+    )
+
+    $installerPath = Join-Path (Get-RepoPath -Root $Root -Repo ($Config.Repos | Where-Object { $_.Name -eq 'eMule-tooling' } | Select-Object -First 1)) 'helpers\install-editorconfig-hook.ps1'
+    if (-not (Test-Path -LiteralPath $installerPath -PathType Leaf)) {
+        throw "Missing shared hook installer: $installerPath"
+    }
+
+    foreach ($targetPath in @(Get-HookInstallTargets -Root $Root -Config $Config)) {
+        if (-not (Test-Path -LiteralPath $targetPath -PathType Container)) {
+            throw "Missing hook install target: $targetPath"
+        }
+
+        Invoke-Checked -FilePath 'pwsh' -ArgumentList @(
+            '-NoLogo',
+            '-NoProfile',
+            '-ExecutionPolicy',
+            'Bypass',
+            '-File',
+            $installerPath,
+            '-RepoRoot',
+            $targetPath
+        )
+    }
+}
+
+function Assert-WorkspaceHooksInstalled {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Root,
+
+        [Parameter(Mandatory = $true)]
+        [hashtable]$Config
+    )
+
+    $expectedHooksPath = Get-ExpectedSharedHooksPath -Root $Root
+    $sharedPreCommitPath = Join-Path $expectedHooksPath 'pre-commit'
+    if (-not (Test-Path -LiteralPath $sharedPreCommitPath -PathType Leaf)) {
+        throw "Shared pre-commit hook is missing: $sharedPreCommitPath"
+    }
+
+    foreach ($targetPath in @(Get-HookInstallTargets -Root $Root -Config $Config)) {
+        if (-not (Test-Path -LiteralPath $targetPath -PathType Container)) {
+            throw "Missing hook validation target: $targetPath"
+        }
+
+        $hooksPathOutput = & git -C $targetPath config --local --get core.hooksPath 2>$null
+        $exitCode = $LASTEXITCODE
+        $hooksPath = if ($exitCode -eq 0 -and -not [string]::IsNullOrWhiteSpace($hooksPathOutput)) {
+            [System.IO.Path]::GetFullPath($hooksPathOutput.Trim())
+        } else {
+            ''
+        }
+
+        if ($hooksPath -ne $expectedHooksPath) {
+            throw "Hook path drift detected for '$targetPath'. Expected core.hooksPath '$expectedHooksPath'."
+        }
+
+        $resolvedHooksPathOutput = & git -C $targetPath rev-parse --git-path hooks 2>$null
+        if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($resolvedHooksPathOutput)) {
+            throw "Unable to resolve git hooks path for '$targetPath'."
+        }
+
+        $resolvedHooksPath = [System.IO.Path]::GetFullPath($resolvedHooksPathOutput.Trim())
+        if ($resolvedHooksPath -ne $expectedHooksPath) {
+            throw "Resolved hooks path drift detected for '$targetPath'. Expected '$expectedHooksPath', found '$resolvedHooksPath'."
+        }
+    }
+}
+
 function Invoke-Init {
     param(
         [Parameter(Mandatory = $true)]
@@ -1040,11 +1184,14 @@ function Invoke-Materialize {
         [string]$SeedRoot
     )
 
+    Assert-MaterializeBootstrapRoot -Root $Root
     Invoke-Init -Root $Root -Config $Config -WorkspaceName $WorkspaceName -SeedRoot $SeedRoot
     Ensure-AppWorktrees -Root $Root -Config $Config
     Remove-LegacyAppWorktrees -Root $Root -Config $Config
     Remove-LegacyAppDependencyLinks -Root $Root -Config $Config
     Write-CompareLaunchers -Root $Root -Config $Config
+    Install-WorkspaceHooks -Root $Root -Config $Config
+    Set-WorkspaceRootEnvironment -Root $Root
     $legacyStatusPath = Join-Path (Get-WorkspaceRoot -Root $Root -WorkspaceName $WorkspaceName) 'state\EMULE-STATUS.md'
     if (Test-Path -LiteralPath $legacyStatusPath -PathType Leaf) {
         Remove-Item -LiteralPath $legacyStatusPath -Force
@@ -1117,6 +1264,32 @@ function Invoke-Validate {
             throw ("Validation failed. Analysis compare target missing: {0} [{1}]" -f $repo.Name, $compareRoot)
         }
     }
+
+    Assert-WorkspaceHooksInstalled -Root $Root -Config $Config
+
+    $buildRepo = @($Config.Repos | Where-Object { $_.Name -eq 'eMule-build' } | Select-Object -First 1)[0]
+    if ($null -eq $buildRepo) {
+        throw 'Validation failed. eMule-build repo is not configured.'
+    }
+
+    $buildWorkspacePath = Join-Path (Get-RepoPath -Root $Root -Repo $buildRepo) 'workspace.ps1'
+    if (-not (Test-Path -LiteralPath $buildWorkspacePath -PathType Leaf)) {
+        throw "Validation failed. Missing build workspace helper: $buildWorkspacePath"
+    }
+
+    Invoke-Checked -FilePath 'pwsh' -ArgumentList @(
+        '-NoLogo',
+        '-NoProfile',
+        '-ExecutionPolicy',
+        'Bypass',
+        '-File',
+        $buildWorkspacePath,
+        'validate',
+        '-EmuleWorkspaceRoot',
+        $Root,
+        '-WorkspaceName',
+        $WorkspaceName
+    )
 
     Write-Host 'Validation passed.'
 }
