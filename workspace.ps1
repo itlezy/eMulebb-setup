@@ -287,6 +287,28 @@ function Get-AllRepoConfigs {
     @($Config.AppRepo) + @($Config.Repos) + @($Config.AnalysisRepos) + @($Config.ThirdPartyRepos)
 }
 
+function Get-ManagedAppWorktrees {
+    param(
+        [Parameter(Mandatory = $true)]
+        [hashtable]$Config,
+
+        [switch]$IncludeInactive
+    )
+
+    $worktrees = @($Config.AppRepo.Worktrees)
+    if ($IncludeInactive) {
+        return @($worktrees)
+    }
+
+    return @($worktrees | Where-Object {
+        if ($_.ContainsKey('Active')) {
+            return [bool]$_.Active
+        }
+
+        return $true
+    })
+}
+
 function Get-HookInstallTargets {
     param(
         [Parameter(Mandatory = $true)]
@@ -300,7 +322,7 @@ function Get-HookInstallTargets {
     foreach ($repo in @($Config.Repos | Where-Object { $_.Name -in @('eMule-build', 'eMule-build-tests', 'eMule-tooling') })) {
         $targets.Add((Get-RepoPath -Root $Root -Repo $repo)) | Out-Null
     }
-    foreach ($worktree in @($Config.AppRepo.Worktrees)) {
+    foreach ($worktree in @(Get-ManagedAppWorktrees -Config $Config)) {
         $targets.Add((Join-Path $Root $worktree.RelativePath)) | Out-Null
     }
 
@@ -350,7 +372,7 @@ function Get-LocalVariantCompareTargets {
     )
 
     $targets = @()
-    foreach ($worktree in @($Config.AppRepo.Worktrees)) {
+    foreach ($worktree in @(Get-ManagedAppWorktrees -Config $Config)) {
         $targetName = 'local-072-{0}' -f $worktree.Name
         $targetPath = Join-Path $Root ($worktree.RelativePath + '\srchybrid')
         $targets += [pscustomobject]@{
@@ -466,6 +488,7 @@ function Get-ComparePresets {
         $presets += New-ComparePreset -Key ("community-060-vs-{0}" -f $right) -Label ("Community 0.60 vs {0}" -f $right) -Category 'Community 0.60 vs local' -LeftName 'community-0.60' -RightName $right
         $presets += New-ComparePreset -Key ("community-072-vs-{0}" -f $right) -Label ("Community 0.72 vs {0}" -f $right) -Category 'Community 0.72 vs local' -LeftName 'community-0.72' -RightName $right
         $presets += New-ComparePreset -Key ("mods-archive-vs-{0}" -f $right) -Label ("Mods archive vs {0}" -f $right) -Category 'Mods Archive' -LeftName 'mods-archive' -RightName $right
+        $presets += New-ComparePreset -Key ("stale-experimental-clean-vs-{0}" -f $right) -Label ("Stale experimental clean vs {0}" -f $right) -Category 'Stale experimental reference' -LeftName 'stale-v0.72a-experimental-clean' -RightName $right
     }
 
     return @($presets)
@@ -777,7 +800,7 @@ function Ensure-AppBranches {
         [hashtable]$Config
     )
 
-    foreach ($worktree in @($Config.AppRepo.Worktrees)) {
+    foreach ($worktree in @(Get-ManagedAppWorktrees -Config $Config)) {
         Invoke-Checked -FilePath 'git' -ArgumentList @('-C', $RepoPath, 'fetch', 'origin', ("refs/heads/{0}:refs/remotes/origin/{0}" -f $worktree.Branch))
         $branchExists = (& git -C $RepoPath show-ref --verify --quiet ("refs/heads/{0}" -f $worktree.Branch)); $branchExitCode = $LASTEXITCODE
         if ($branchExitCode -ne 0) {
@@ -817,7 +840,7 @@ function Ensure-AppWorktrees {
     Ensure-AppBranches -RepoPath $repoPath -Config $Config
     Ensure-AppAnchorCheckout -RepoPath $repoPath -Config $Config
 
-    foreach ($worktree in @($Config.AppRepo.Worktrees)) {
+    foreach ($worktree in @(Get-ManagedAppWorktrees -Config $Config)) {
         $targetPath = Join-Path $Root $worktree.RelativePath
         Ensure-Directory -Path (Split-Path -Parent $targetPath)
 
@@ -858,7 +881,7 @@ function Remove-LegacyAppDependencyLinks {
         [hashtable]$Config
     )
 
-    foreach ($worktree in @($Config.AppRepo.Worktrees)) {
+    foreach ($worktree in @(Get-ManagedAppWorktrees -Config $Config)) {
         $worktreeRoot = Join-Path $Root $worktree.RelativePath
         foreach ($name in @('cryptopp', 'id3lib', 'mbedtls', 'miniupnpc', 'ResizableLib', 'zlib')) {
             Remove-ReparsePoint -Path (Join-Path $worktreeRoot $name)
@@ -1011,7 +1034,7 @@ function Remove-LegacyAppWorktrees {
         [hashtable]$Config
     )
 
-    $managedWorktreePaths = @($Config.AppRepo.Worktrees | ForEach-Object { [System.IO.Path]::GetFullPath((Join-Path $Root $_.RelativePath)) })
+    $managedWorktreePaths = @(Get-ManagedAppWorktrees -Config $Config | ForEach-Object { [System.IO.Path]::GetFullPath((Join-Path $Root $_.RelativePath)) })
     if ($managedWorktreePaths.Count -eq 0) {
         return
     }
@@ -1238,7 +1261,7 @@ function Invoke-Validate {
         (Join-Path $workspaceRoot 'deps.psd1')
         (Get-WorkspacePropsPath -Root $Root -Config $Config)
     )
-    foreach ($worktree in @($Config.AppRepo.Worktrees)) {
+    foreach ($worktree in @(Get-ManagedAppWorktrees -Config $Config)) {
         $requiredPaths += (Join-Path $Root $worktree.RelativePath)
     }
 
