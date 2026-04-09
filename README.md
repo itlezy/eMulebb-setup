@@ -28,8 +28,8 @@ EMULE_WORKSPACE_ROOT\
         eMule-v0.72a-oracle\
         eMule-v0.72a-build\
         eMule-v0.72a-bugfix\
-        eMule-v0.72a-tracing\              # declared, inactive until branch exists
-        eMule-v0.72a-tracing-harness\      # declared, inactive until branch exists
+        eMule-v0.72a-tracing\              # oracle-derived observability branch
+        eMule-v0.72a-tracing-harness\      # tracing-derived behavior-changing harness branch
       artifacts\
       scripts\
       state\
@@ -78,7 +78,7 @@ pwsh -File .\repos\eMule-build\workspace.ps1 full        -EmuleWorkspaceRoot <wo
 - `EMULE_WORKSPACE_ROOT` may be provided with `-EmuleWorkspaceRoot` or the `EMULE_WORKSPACE_ROOT` environment variable.
 - `materialize` is a bootstrap-only command for a new empty workspace root. It refuses to run against an already populated workspace root.
 - `materialize` creates the canonical repo pool, the `v0.72a` workspace manifest, the shared workspace props file, and the active managed app worktrees for `main`, `oracle`, `build`, and `bugfix`.
-- `tracing` and `tracing-harness` are declared branch/worktree roles in setup, but remain inactive until those remote branches exist and are explicitly enabled.
+- `tracing` and `tracing-harness` are active managed app worktrees once their remote branches exist.
 - `materialize` also clones the comparison repos under `analysis`, including the stale experimental clean reference branch, and regenerates the WinMerge launchers under `analysis\compare`.
 - `materialize` installs the centralized shared workspace hook setup for `eMule-build`, `eMule-build-tests`, `eMule-tooling`, and the managed app worktrees.
 - After a successful `materialize`, `EMULE_WORKSPACE_ROOT` is set for the current process and persisted at the user environment level.

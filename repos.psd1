@@ -44,13 +44,13 @@
                 Name = 'tracing'
                 Branch = 'tracing/v0.72a'
                 RelativePath = 'workspaces\v0.72a\app\eMule-v0.72a-tracing'
-                Active = $false
+                Active = $true
             }
             @{
                 Name = 'tracing-harness'
                 Branch = 'tracing-harness/v0.72a'
                 RelativePath = 'workspaces\v0.72a\app\eMule-v0.72a-tracing-harness'
-                Active = $false
+                Active = $true
             }
         )
     }
