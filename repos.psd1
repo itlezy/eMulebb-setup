@@ -40,6 +40,18 @@
                 RelativePath = 'workspaces\v0.72a\app\eMule-v0.72a-bugfix'
                 Active = $true
             }
+            @{
+                Name = 'tracing'
+                Branch = 'tracing/v0.72a'
+                RelativePath = 'workspaces\v0.72a\app\eMule-v0.72a-tracing'
+                Active = $false
+            }
+            @{
+                Name = 'tracing-harness'
+                Branch = 'tracing-harness/v0.72a'
+                RelativePath = 'workspaces\v0.72a\app\eMule-v0.72a-tracing-harness'
+                Active = $false
+            }
         )
     }
     Repos = @(
@@ -97,6 +109,13 @@
             Branch = 'main'
             BranchOptional = $true
             CompareSubdir = $null
+        }
+        @{
+            Name = 'stale-v0.72a-experimental-clean'
+            Url = 'https://github.com/itlezy/eMule.git'
+            RelativePath = 'analysis\stale-v0.72a-experimental-clean'
+            Branch = 'stale/v0.72a-experimental-clean'
+            CompareSubdir = 'srchybrid'
         }
     )
     ThirdPartyRepos = @(

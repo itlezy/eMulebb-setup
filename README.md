@@ -28,6 +28,8 @@ EMULE_WORKSPACE_ROOT\
         eMule-v0.72a-oracle\
         eMule-v0.72a-build\
         eMule-v0.72a-bugfix\
+        eMule-v0.72a-tracing\              # declared, inactive until branch exists
+        eMule-v0.72a-tracing-harness\      # declared, inactive until branch exists
       artifacts\
       scripts\
       state\
@@ -36,6 +38,7 @@ EMULE_WORKSPACE_ROOT\
     community-0.60\
     community-0.72\
     mods-archive\
+    stale-v0.72a-experimental-clean\
     compare\
   archives\
 ```
@@ -74,8 +77,9 @@ pwsh -File .\repos\eMule-build\workspace.ps1 full        -EmuleWorkspaceRoot <wo
 
 - `EMULE_WORKSPACE_ROOT` may be provided with `-EmuleWorkspaceRoot` or the `EMULE_WORKSPACE_ROOT` environment variable.
 - `materialize` is a bootstrap-only command for a new empty workspace root. It refuses to run against an already populated workspace root.
-- `materialize` creates the canonical repo pool, the `v0.72a` workspace manifest, the shared workspace props file, and the managed app worktrees for `main`, `oracle`, `build`, and `bugfix`.
-- `materialize` also clones the comparison repos under `analysis` and regenerates the WinMerge launchers under `analysis\compare`.
+- `materialize` creates the canonical repo pool, the `v0.72a` workspace manifest, the shared workspace props file, and the active managed app worktrees for `main`, `oracle`, `build`, and `bugfix`.
+- `tracing` and `tracing-harness` are declared branch/worktree roles in setup, but remain inactive until those remote branches exist and are explicitly enabled.
+- `materialize` also clones the comparison repos under `analysis`, including the stale experimental clean reference branch, and regenerates the WinMerge launchers under `analysis\compare`.
 - `materialize` installs the centralized shared workspace hook setup for `eMule-build`, `eMule-build-tests`, `eMule-tooling`, and the managed app worktrees.
 - After a successful `materialize`, `EMULE_WORKSPACE_ROOT` is set for the current process and persisted at the user environment level.
 - The app repo is canonical under `repos\eMule`; active 0.72 series work is done in worktrees under `workspaces\v0.72a\app`.
@@ -84,7 +88,7 @@ pwsh -File .\repos\eMule-build\workspace.ps1 full        -EmuleWorkspaceRoot <wo
 - The tests repo is expected on `main`.
 - `materialize` actively manages only the canonical 0.72a app worktrees and removes legacy app worktrees from the workspace app directory.
 - `validate` now checks the setup-owned layout and shared hook wiring, then delegates to `repos\eMule-build\workspace.ps1 validate` for downstream workspace policy validation.
-- `compare` launches WinMerge for built-in presets that compare `emuleai`, `community-0.60`, `community-0.72`, and `mods-archive` against the canonical local 0.72a worktrees.
+- `compare` launches WinMerge for built-in presets that compare `emuleai`, `community-0.60`, `community-0.72`, `mods-archive`, and `stale-v0.72a-experimental-clean` against the active canonical local 0.72a worktrees.
 - `-ArtifactsSeedRoot` is optional and is intended for local validation flows where dependency build outputs should be copied from an existing `third_party` tree.
 
 ## Documentation Map
