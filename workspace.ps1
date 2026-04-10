@@ -940,6 +940,7 @@ function Write-WorkspaceManifest {
             SeedRepo = @{
                 Name = 'eMule'
                 Path = '..\..\repos\eMule'
+                Branch = 'main'
             }
             Variants = @(
                 @{ Name = 'main'; Path = 'app\eMule-main'; Branch = 'main' }

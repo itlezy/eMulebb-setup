@@ -77,7 +77,8 @@ pwsh -File .\repos\eMule-build\workspace.ps1 full        -EmuleWorkspaceRoot <wo
 
 - `EMULE_WORKSPACE_ROOT` must be provided either with `-EmuleWorkspaceRoot` or through the `EMULE_WORKSPACE_ROOT` environment variable.
 - `materialize` is a bootstrap-only command for a new empty workspace root. It refuses to run against an already populated workspace root.
-- `materialize` creates the canonical repo pool, the `v0.72a` workspace manifest, the shared workspace props file, and the active managed app worktrees for `main`, `oracle`, `build`, and `bugfix`.
+- `materialize` creates the canonical repo pool, the `v0.72a` workspace manifest, the shared workspace props file, and the active managed app worktrees for `main`, `oracle`, `build`, `bugfix`, `tracing`, and `tracing-harness`.
+- `init` and `sync` also regenerate the workspace manifest and compare launchers for the current configured topology.
 - `tracing` and `tracing-harness` are active managed app worktrees once their remote branches exist.
 - `materialize` also clones the comparison repos under `analysis`, including the stale experimental clean reference branch, and regenerates the WinMerge launchers under `analysis\compare`.
 - `materialize` installs the centralized shared workspace hook setup for `eMule-build`, `eMule-build-tests`, `eMule-tooling`, and the managed app worktrees.
