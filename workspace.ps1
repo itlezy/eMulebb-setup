@@ -979,6 +979,8 @@ function Write-WorkspaceManifest {
                 @{ Name = 'oracle'; Path = 'app\eMule-v0.72a-oracle'; Branch = 'oracle/v0.72a-build' }
                 @{ Name = 'bugfix'; Path = 'app\eMule-v0.72a-bugfix'; Branch = 'release/v0.72a-bugfix' }
                 @{ Name = 'build'; Path = 'app\eMule-v0.72a-build'; Branch = 'release/v0.72a-build' }
+                @{ Name = 'tracing'; Path = 'app\eMule-v0.72a-tracing'; Branch = 'tracing/v0.72a' }
+                @{ Name = 'tracing-harness'; Path = 'app\eMule-v0.72a-tracing-harness'; Branch = 'tracing-harness/v0.72a' }
             )
         }
         Repos = @{
