@@ -931,37 +931,215 @@ function Write-WorkspaceManifest {
 
     $workspaceRoot = Get-WorkspaceRoot -Root $Root -WorkspaceName $WorkspaceName
     $manifestPath = Join-Path $workspaceRoot 'deps.psd1'
+    $manifest = New-ExpectedWorkspaceManifestContract -Root $Root -Config $Config -WorkspaceName $WorkspaceName
+    $variantLines = foreach ($variant in @($manifest.Workspace.AppRepo.Variants)) {
+        "                @{{ Name = '{0}'; Path = '{1}'; Branch = '{2}' }}" -f $variant.Name, $variant.Path, $variant.Branch
+    }
     $content = @"
 @{
-    EmuleWorkspaceRoot = '..\..'
+    EmuleWorkspaceRoot = '$($manifest.EmuleWorkspaceRoot)'
     Workspace = @{
-        Name = '$WorkspaceName'
+        Name = '$($manifest.Workspace.Name)'
         AppRepo = @{
             SeedRepo = @{
-                Name = 'eMule'
-                Path = '..\..\repos\eMule'
-                Branch = 'main'
+                Name = '$($manifest.Workspace.AppRepo.SeedRepo.Name)'
+                Path = '$($manifest.Workspace.AppRepo.SeedRepo.Path)'
+                Branch = '$($manifest.Workspace.AppRepo.SeedRepo.Branch)'
             }
             Variants = @(
-                @{ Name = 'main'; Path = 'app\eMule-main'; Branch = 'main' }
-                @{ Name = 'oracle'; Path = 'app\eMule-v0.72a-oracle'; Branch = 'oracle/v0.72a-build' }
-                @{ Name = 'bugfix'; Path = 'app\eMule-v0.72a-bugfix'; Branch = 'release/v0.72a-bugfix' }
-                @{ Name = 'build'; Path = 'app\eMule-v0.72a-build'; Branch = 'release/v0.72a-build' }
-                @{ Name = 'tracing'; Path = 'app\eMule-v0.72a-tracing'; Branch = 'tracing/v0.72a' }
-                @{ Name = 'tracing-harness'; Path = 'app\eMule-v0.72a-tracing-harness'; Branch = 'tracing-harness/v0.72a' }
+$($variantLines -join "`r`n")
             )
         }
         Repos = @{
-            Build = '..\..\repos\eMule-build'
-            Tests = '..\..\repos\eMule-build-tests'
-            Tooling = '..\..\repos\eMule-tooling'
-            Remote = '..\..\repos\eMule-remote'
-            ThirdParty = '..\..\repos\third_party'
+            Build = '$($manifest.Workspace.Repos.Build)'
+            Tests = '$($manifest.Workspace.Repos.Tests)'
+            Tooling = '$($manifest.Workspace.Repos.Tooling)'
+            Remote = '$($manifest.Workspace.Repos.Remote)'
+            ThirdParty = '$($manifest.Workspace.Repos.ThirdParty)'
         }
     }
 }
 "@
     Set-Content -LiteralPath $manifestPath -Value $content -Encoding utf8
+}
+
+function Normalize-WorkspaceContractPath {
+    param([Parameter(Mandatory = $true)][string]$Path)
+
+    $normalized = $Path.Trim() -replace '/', '\'
+    while ($normalized.StartsWith('.\')) {
+        $normalized = $normalized.Substring(2)
+    }
+
+    return $normalized
+}
+
+function Get-WorkspaceContractRelativePath {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$BasePath,
+
+        [Parameter(Mandatory = $true)]
+        [string]$TargetPath
+    )
+
+    return Normalize-WorkspaceContractPath -Path ([System.IO.Path]::GetRelativePath($BasePath, $TargetPath))
+}
+
+function Get-RequiredContractValue {
+    param(
+        [Parameter(Mandatory = $true)]
+        [hashtable]$Table,
+
+        [Parameter(Mandatory = $true)]
+        [string]$Key,
+
+        [Parameter(Mandatory = $true)]
+        [string]$Context
+    )
+
+    if (-not $Table.ContainsKey($Key)) {
+        throw "Workspace manifest contract is missing '$Context.$Key'."
+    }
+
+    return $Table[$Key]
+}
+
+function New-ExpectedWorkspaceManifestContract {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Root,
+
+        [Parameter(Mandatory = $true)]
+        [hashtable]$Config,
+
+        [Parameter(Mandatory = $true)]
+        [string]$WorkspaceName
+    )
+
+    $workspaceRoot = Get-WorkspaceRoot -Root $Root -WorkspaceName $WorkspaceName
+    $seedRepoPath = Get-RepoPath -Root $Root -Repo $Config.AppRepo
+    $namedRepos = @{}
+    foreach ($repo in @($Config.Repos)) {
+        $namedRepos[[string]$repo.Name] = $repo
+    }
+
+    $expectedRepos = [ordered]@{}
+    foreach ($entry in @(
+        @{ ContractKey = 'Build'; RepoName = 'eMule-build' }
+        @{ ContractKey = 'Tests'; RepoName = 'eMule-build-tests' }
+        @{ ContractKey = 'Tooling'; RepoName = 'eMule-tooling' }
+        @{ ContractKey = 'Remote'; RepoName = 'eMule-remote' }
+    )) {
+        if (-not $namedRepos.ContainsKey($entry.RepoName)) {
+            throw "Setup config is missing repo '$($entry.RepoName)' required for the workspace manifest contract."
+        }
+
+        $expectedRepos[$entry.ContractKey] = Get-WorkspaceContractRelativePath -BasePath $workspaceRoot -TargetPath (Get-RepoPath -Root $Root -Repo $namedRepos[$entry.RepoName])
+    }
+    $expectedRepos['ThirdParty'] = Get-WorkspaceContractRelativePath -BasePath $workspaceRoot -TargetPath (Join-Path $Root 'repos\third_party')
+
+    $expectedVariants = foreach ($worktree in @(Get-ManagedAppWorktrees -Config $Config)) {
+        [ordered]@{
+            Name = [string]$worktree.Name
+            Path = Get-WorkspaceContractRelativePath -BasePath $workspaceRoot -TargetPath (Join-Path $Root $worktree.RelativePath)
+            Branch = [string]$worktree.Branch
+        }
+    }
+
+    [ordered]@{
+        EmuleWorkspaceRoot = Get-WorkspaceContractRelativePath -BasePath $workspaceRoot -TargetPath $Root
+        Workspace = [ordered]@{
+            Name = $WorkspaceName
+            AppRepo = [ordered]@{
+                SeedRepo = [ordered]@{
+                    Name = [string]$Config.AppRepo.Name
+                    Path = Get-WorkspaceContractRelativePath -BasePath $workspaceRoot -TargetPath $seedRepoPath
+                    Branch = [string]$Config.AppRepo.Branch
+                }
+                Variants = @($expectedVariants)
+            }
+            Repos = $expectedRepos
+        }
+    }
+}
+
+function ConvertTo-NormalizedWorkspaceManifestContract {
+    param(
+        [Parameter(Mandatory = $true)]
+        [hashtable]$Manifest
+    )
+
+    $workspace = Get-RequiredContractValue -Table $Manifest -Key 'Workspace' -Context 'manifest'
+    $appRepo = Get-RequiredContractValue -Table $workspace -Key 'AppRepo' -Context 'manifest.Workspace'
+    $seedRepo = Get-RequiredContractValue -Table $appRepo -Key 'SeedRepo' -Context 'manifest.Workspace.AppRepo'
+    $repos = Get-RequiredContractValue -Table $workspace -Key 'Repos' -Context 'manifest.Workspace'
+    $variants = @(Get-RequiredContractValue -Table $appRepo -Key 'Variants' -Context 'manifest.Workspace.AppRepo')
+
+    $normalizedVariants = foreach ($variant in $variants) {
+        [ordered]@{
+            Name = [string](Get-RequiredContractValue -Table $variant -Key 'Name' -Context 'manifest.Workspace.AppRepo.Variants[]')
+            Path = Normalize-WorkspaceContractPath -Path ([string](Get-RequiredContractValue -Table $variant -Key 'Path' -Context 'manifest.Workspace.AppRepo.Variants[]'))
+            Branch = [string](Get-RequiredContractValue -Table $variant -Key 'Branch' -Context 'manifest.Workspace.AppRepo.Variants[]')
+        }
+    }
+
+    [ordered]@{
+        EmuleWorkspaceRoot = Normalize-WorkspaceContractPath -Path ([string](Get-RequiredContractValue -Table $Manifest -Key 'EmuleWorkspaceRoot' -Context 'manifest'))
+        Workspace = [ordered]@{
+            Name = [string](Get-RequiredContractValue -Table $workspace -Key 'Name' -Context 'manifest.Workspace')
+            AppRepo = [ordered]@{
+                SeedRepo = [ordered]@{
+                    Name = [string](Get-RequiredContractValue -Table $seedRepo -Key 'Name' -Context 'manifest.Workspace.AppRepo.SeedRepo')
+                    Path = Normalize-WorkspaceContractPath -Path ([string](Get-RequiredContractValue -Table $seedRepo -Key 'Path' -Context 'manifest.Workspace.AppRepo.SeedRepo'))
+                    Branch = [string](Get-RequiredContractValue -Table $seedRepo -Key 'Branch' -Context 'manifest.Workspace.AppRepo.SeedRepo')
+                }
+                Variants = @($normalizedVariants)
+            }
+            Repos = [ordered]@{
+                Build = Normalize-WorkspaceContractPath -Path ([string](Get-RequiredContractValue -Table $repos -Key 'Build' -Context 'manifest.Workspace.Repos'))
+                Tests = Normalize-WorkspaceContractPath -Path ([string](Get-RequiredContractValue -Table $repos -Key 'Tests' -Context 'manifest.Workspace.Repos'))
+                Tooling = Normalize-WorkspaceContractPath -Path ([string](Get-RequiredContractValue -Table $repos -Key 'Tooling' -Context 'manifest.Workspace.Repos'))
+                Remote = Normalize-WorkspaceContractPath -Path ([string](Get-RequiredContractValue -Table $repos -Key 'Remote' -Context 'manifest.Workspace.Repos'))
+                ThirdParty = Normalize-WorkspaceContractPath -Path ([string](Get-RequiredContractValue -Table $repos -Key 'ThirdParty' -Context 'manifest.Workspace.Repos'))
+            }
+        }
+    }
+}
+
+function Assert-WorkspaceManifestContract {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Root,
+
+        [Parameter(Mandatory = $true)]
+        [hashtable]$Config,
+
+        [Parameter(Mandatory = $true)]
+        [string]$WorkspaceName
+    )
+
+    $workspaceRoot = Get-WorkspaceRoot -Root $Root -WorkspaceName $WorkspaceName
+    $manifestPath = Join-Path $workspaceRoot 'deps.psd1'
+    if (-not (Test-Path -LiteralPath $manifestPath -PathType Leaf)) {
+        throw "Workspace manifest contract is missing: $manifestPath"
+    }
+
+    $actualManifest = ConvertTo-NormalizedWorkspaceManifestContract -Manifest (Import-PowerShellDataFile -LiteralPath $manifestPath)
+    $expectedManifest = New-ExpectedWorkspaceManifestContract -Root $Root -Config $Config -WorkspaceName $WorkspaceName
+
+    $actualJson = $actualManifest | ConvertTo-Json -Depth 8 -Compress
+    $expectedJson = $expectedManifest | ConvertTo-Json -Depth 8 -Compress
+    if ($actualJson -ne $expectedJson) {
+        throw @"
+Workspace manifest contract drift detected: $manifestPath
+Regenerate it with:
+  pwsh -File .\workspace.ps1 sync -EmuleWorkspaceRoot $Root
+
+Expected: $expectedJson
+Actual:   $actualJson
+"@
+    }
 }
 
 function Overlay-SeedArtifacts {
@@ -1244,6 +1422,8 @@ function Invoke-Validate {
     if ($missing.Count -gt 0) {
         throw ("Validation failed. Missing paths:`n{0}" -f ($missing -join [Environment]::NewLine))
     }
+
+    Assert-WorkspaceManifestContract -Root $Root -Config $Config -WorkspaceName $WorkspaceName
 
     $null = Get-WinMergePath
     foreach ($target in Get-LocalVariantCompareTargets -Root $Root -Config $Config) {

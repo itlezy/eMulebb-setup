@@ -78,7 +78,8 @@ pwsh -File .\repos\eMule-build\workspace.ps1 full        -EmuleWorkspaceRoot <wo
 - `EMULE_WORKSPACE_ROOT` must be provided either with `-EmuleWorkspaceRoot` or through the `EMULE_WORKSPACE_ROOT` environment variable.
 - `materialize` is a bootstrap-only command for a new empty workspace root. It refuses to run against an already populated workspace root.
 - `materialize` creates the canonical repo pool, the `v0.72a` workspace manifest, the shared workspace props file, and the active managed app worktrees for `main`, `oracle`, `build`, `bugfix`, `tracing`, and `tracing-harness`.
-- `init` and `sync` also regenerate the workspace manifest and compare launchers for the current configured topology.
+- `workspaces\v0.72a\deps.psd1` is a required generated contract file. It is setup-owned workspace state, and `validate` now fails if it drifts from the current setup topology.
+- `init` and `sync` regenerate that workspace manifest contract and the compare launchers for the current configured topology.
 - `tracing` and `tracing-harness` are active managed app worktrees once their remote branches exist.
 - `materialize` also clones the comparison repos under `analysis`, including the stale experimental clean reference branch, and regenerates the WinMerge launchers under `analysis\compare`.
 - `materialize` installs the centralized shared workspace hook setup for `eMule-build`, `eMule-build-tests`, `eMule-tooling`, and the managed app worktrees.
@@ -88,7 +89,7 @@ pwsh -File .\repos\eMule-build\workspace.ps1 full        -EmuleWorkspaceRoot <wo
 - `eMulebb-setup` is the front-door workspace helper only; it does not provide build or test commands.
 - The tests repo is expected on `main`.
 - `materialize` actively manages only the canonical 0.72a app worktrees and removes legacy app worktrees from the workspace app directory.
-- `validate` now checks the setup-owned layout and shared hook wiring, then delegates to `repos\eMule-build\workspace.ps1 validate` for downstream workspace policy validation.
+- `validate` now checks the setup-owned layout, shared hook wiring, and the generated workspace manifest contract, then delegates to `repos\eMule-build\workspace.ps1 validate` for downstream workspace policy validation.
 - `compare` launches WinMerge for built-in presets that compare `emuleai`, `community-0.60`, `community-0.72`, `mods-archive`, and `stale-v0.72a-experimental-clean` against the active canonical local 0.72a worktrees.
 - `-ArtifactsSeedRoot` is optional and is intended for local validation flows where dependency build outputs should be copied from an existing `third_party` tree.
 
