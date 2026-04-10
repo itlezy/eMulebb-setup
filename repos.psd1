@@ -1,5 +1,4 @@
 @{
-    DefaultEmuleWorkspaceRoot = 'C:\tmp\emule_clean_room_xx'
     DefaultWorkspaceName = 'v0.72a'
     LogFileName = 'eMulebb-setup.log'
     WorkspacePropsFileName = 'v0.72a-workspace.props'

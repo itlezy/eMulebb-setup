@@ -42,7 +42,7 @@ function Resolve-EmuleWorkspaceRoot {
     } elseif (-not [string]::IsNullOrWhiteSpace($env:EMULE_WORKSPACE_ROOT)) {
         $env:EMULE_WORKSPACE_ROOT
     } else {
-        $Config.DefaultEmuleWorkspaceRoot
+        throw 'Emule workspace root is required. Pass -EmuleWorkspaceRoot or set EMULE_WORKSPACE_ROOT.'
     }
 
     [System.IO.Path]::GetFullPath($candidate)
@@ -887,39 +887,6 @@ function Remove-LegacyAppDependencyLinks {
             Remove-ReparsePoint -Path (Join-Path $worktreeRoot $name)
         }
     }
-}
-
-function Get-AppPropertyOverrides {
-    param(
-        [Parameter(Mandatory = $true)]
-        [string]$Root
-    )
-
-    @(
-        "/p:WorkspaceRoot=$Root\"
-        "/p:CryptoPpRoot=$(Join-Path $Root 'repos\third_party\eMule-cryptopp\')"
-        "/p:Id3libRoot=$(Join-Path $Root 'repos\third_party\eMule-id3lib\')"
-        "/p:MbedTlsRoot=$(Join-Path $Root 'repos\third_party\eMule-mbedtls\')"
-        "/p:MiniUpnpRoot=$(Join-Path $Root 'repos\third_party\eMule-miniupnp\')"
-        "/p:ResizableLibRoot=$(Join-Path $Root 'repos\third_party\eMule-ResizableLib\')"
-        "/p:ZlibRoot=$(Join-Path $Root 'repos\third_party\eMule-zlib\')"
-    )
-}
-
-function Get-AppBuildMatrix {
-    @(
-        @{ Configuration = 'Debug'; Platform = 'x64' }
-        @{ Configuration = 'Release'; Platform = 'x64' }
-        @{ Configuration = 'Debug'; Platform = 'ARM64' }
-        @{ Configuration = 'Release'; Platform = 'ARM64' }
-    )
-}
-
-function Get-TestBuildMatrix {
-    @(
-        @{ Configuration = 'Debug'; Platform = 'x64' }
-        @{ Configuration = 'Release'; Platform = 'x64' }
-    )
 }
 
 function Write-WorkspaceProps {
