@@ -123,12 +123,23 @@
             Url = 'https://github.com/itlezy/eMule-cryptopp.git'
             RelativePath = 'repos\third_party\eMule-cryptopp'
             Branch = 'CRYPTOPP_8_4_0-pristine'
+            UpdatePolicy = @{
+                UpstreamUrl = 'https://github.com/weidai11/cryptopp.git'
+                TrackingMode = 'tag'
+                BaselineRef = 'CRYPTOPP_8_4_0'
+                VersionPattern = '^CRYPTOPP_(\d+)_(\d+)_(\d+)$'
+            }
         }
         @{
             Name = 'eMule-id3lib'
             Url = 'https://github.com/itlezy/eMule-id3lib.git'
             RelativePath = 'repos\third_party\eMule-id3lib'
             Branch = 'id3lib-v3.9.1-emule'
+            UpdatePolicy = @{
+                TrackingMode = 'none'
+                BaselineRef = 'v3.9.1'
+                Notes = 'Patch baked into fork; no automated upstream comparison.'
+            }
         }
         @{
             Name = 'eMule-mbedtls'
@@ -136,24 +147,70 @@
             RelativePath = 'repos\third_party\eMule-mbedtls'
             Branch = 'mbedtls-v4.1.0-emule'
             HasSubmodules = $true
+            UpdatePolicy = @{
+                UpstreamUrl = 'https://github.com/Mbed-TLS/mbedtls.git'
+                TrackingMode = 'tag'
+                BaselineRef = 'mbedtls-4.1.0'
+                VersionPattern = '^mbedtls-(\d+)\.(\d+)\.(\d+)$'
+                ChildComponents = @(
+                    @{
+                        Name = 'tf-psa-crypto'
+                        RelativePath = 'tf-psa-crypto'
+                        UpstreamUrl = 'https://github.com/Mbed-TLS/TF-PSA-Crypto.git'
+                        TrackingMode = 'tag'
+                        BaselineRef = 'v1.1.0'
+                        VersionPattern = '^v(\d+)\.(\d+)\.(\d+)$'
+                    }
+                )
+            }
         }
         @{
             Name = 'eMule-miniupnp'
             Url = 'https://github.com/itlezy/eMule-miniupnp.git'
             RelativePath = 'repos\third_party\eMule-miniupnp'
             Branch = 'miniupnpc-master-emule'
+            UpdatePolicy = @{
+                UpstreamUrl = 'https://github.com/miniupnp/miniupnp.git'
+                TrackingMode = 'branch-head'
+                UpstreamRef = 'master'
+                BaselineRef = '0cc037f8b0d563334bace7af4e00e9041cfa97e6'
+            }
+        }
+        @{
+            Name = 'eMule-libpcpnatpmp'
+            Url = 'https://github.com/itlezy/eMule-libpcpnatpmp.git'
+            RelativePath = 'repos\third_party\eMule-libpcpnatpmp'
+            Branch = 'libpcpnatpmp-master-emule'
+            UpdatePolicy = @{
+                UpstreamUrl = 'https://github.com/libpcpnatpmp/libpcpnatpmp.git'
+                TrackingMode = 'branch-head'
+                UpstreamRef = 'master'
+                BaselineRef = '7ab2f9475a242f3714715d7580e1001e9e8a7497'
+            }
         }
         @{
             Name = 'eMule-ResizableLib'
             Url = 'https://github.com/itlezy/eMule-ResizableLib.git'
             RelativePath = 'repos\third_party\eMule-ResizableLib'
             Branch = 'ResizableLib-bebab50-emule'
+            UpdatePolicy = @{
+                UpstreamUrl = 'https://github.com/ppescher/resizablelib.git'
+                TrackingMode = 'branch-head'
+                UpstreamRef = 'master'
+                BaselineRef = 'bebab50a5dbfbb0913b64d23b86d1c3110677c41'
+            }
         }
         @{
             Name = 'eMule-zlib'
             Url = 'https://github.com/itlezy/eMule-zlib.git'
             RelativePath = 'repos\third_party\eMule-zlib'
             Branch = 'zlib-v1.3.2-emule'
+            UpdatePolicy = @{
+                UpstreamUrl = 'https://github.com/madler/zlib.git'
+                TrackingMode = 'tag'
+                BaselineRef = 'v1.3.2'
+                VersionPattern = '^v(\d+)\.(\d+)\.(\d+)$'
+            }
         }
     )
 }

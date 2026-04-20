@@ -16,6 +16,7 @@ EMULE_WORKSPACE_ROOT\
     third_party\
       eMule-cryptopp\
       eMule-id3lib\
+      eMule-libpcpnatpmp\
       eMule-mbedtls\
       eMule-miniupnp\
       eMule-ResizableLib\
@@ -57,7 +58,9 @@ pwsh -File .\workspace.ps1 ensure-path
 pwsh -File .\workspace.ps1 init -EmuleWorkspaceRoot <workspace-root>
 pwsh -File .\workspace.ps1 materialize -EmuleWorkspaceRoot <workspace-root>
 pwsh -File .\workspace.ps1 materialize -EmuleWorkspaceRoot <workspace-root> -ArtifactsSeedRoot <third-party-seed-root>
+pwsh -File .\workspace.ps1 sync -EmuleWorkspaceRoot <workspace-root>
 pwsh -File .\workspace.ps1 status -EmuleWorkspaceRoot <workspace-root>
+pwsh -File .\workspace.ps1 dep-updates -EmuleWorkspaceRoot <workspace-root>
 pwsh -File .\workspace.ps1 validate -EmuleWorkspaceRoot <workspace-root>
 pwsh -File .\workspace.ps1 compare -EmuleWorkspaceRoot <workspace-root>
 pwsh -File .\workspace.ps1 compare <preset-key> -EmuleWorkspaceRoot <workspace-root>
@@ -79,17 +82,22 @@ pwsh -File .\repos\eMule-build\workspace.ps1 full        -EmuleWorkspaceRoot <wo
 - `materialize` is a bootstrap-only command for a new empty workspace root. It refuses to run against an already populated workspace root.
 - `materialize` creates the canonical repo pool, the `v0.72a` workspace manifest, the shared workspace props file, and the active managed app worktrees for `main`, `oracle`, `build`, `bugfix`, `tracing`, and `tracing-harness`.
 - `workspaces\v0.72a\deps.psd1` is a required generated contract file. It is setup-owned workspace state, and `validate` now fails if it drifts from the current setup topology.
-- `init` and `sync` regenerate that workspace manifest contract and the compare launchers for the current configured topology.
+- `init` regenerates the workspace manifest contract and compare launchers for the current configured topology.
+- `sync` regenerates that setup-owned workspace state, refreshes managed app branch refs, and reconciles the canonical app anchor plus active managed app worktrees.
+- `dep-updates` is an advisory upstream report for setup-managed third-party dependencies. It reads setup-owned metadata from `repos.psd1`, prints a short console summary, and writes JSON artifacts under `workspaces\v0.72a\state\dep-updates`.
 - `tracing` and `tracing-harness` are active managed app worktrees once their remote branches exist.
 - `materialize` also clones the comparison repos under `analysis`, including the stale experimental clean reference branch, and regenerates the WinMerge launchers under `analysis\compare`.
 - `materialize` installs the centralized shared workspace hook setup for `eMule-build`, `eMule-build-tests`, `eMule-tooling`, and the managed app worktrees.
 - After a successful `materialize`, `EMULE_WORKSPACE_ROOT` is set for the current process and persisted at the user environment level.
 - The app repo is canonical under `repos\eMule`; active 0.72 series work is done in worktrees under `workspaces\v0.72a\app`.
+- `repos\eMule` is setup-owned anchor state. It should stay detached at `origin/main`; normal app development belongs in `workspaces\v0.72a\app\eMule-main`.
 - `repos\eMule-build` owns the canonical build, test, coverage, and live-diff orchestration.
 - `eMulebb-setup` is the front-door workspace helper only; it does not provide build or test commands.
 - The tests repo is expected on `main`.
 - `materialize` actively manages only the canonical 0.72a app worktrees and removes legacy app worktrees from the workspace app directory.
-- `validate` now checks the setup-owned layout, shared hook wiring, and the generated workspace manifest contract, then delegates to `repos\eMule-build\workspace.ps1 validate` for downstream workspace policy validation.
+- `validate` checks the setup-owned layout, shared hook wiring, and the generated workspace manifest contract, then delegates to `repos\eMule-build\workspace.ps1 validate` for downstream build and policy validation.
+- `repos\eMule-build\workspace.ps1 validate` may repair clean setup-owned anchor drift in `repos\eMule` before running branch policy audits. That repair is limited to reanchoring the canonical app repo to detached `origin/main`.
+- `dep-updates` is advisory only. It does not change pinned branches, and it is intentionally separate from `sync` and `validate`.
 - `compare` launches WinMerge for built-in presets that compare `emuleai`, `community-0.60`, `community-0.72`, `mods-archive`, and `stale-v0.72a-experimental-clean` against the active canonical local 0.72a worktrees.
 - `-ArtifactsSeedRoot` is optional and is intended for local validation flows where dependency build outputs should be copied from an existing `third_party` tree.
 

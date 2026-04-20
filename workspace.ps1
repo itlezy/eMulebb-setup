@@ -2,7 +2,7 @@
 [CmdletBinding()]
 param(
     [Parameter(Position = 0)]
-    [ValidateSet('init', 'materialize', 'status', 'validate', 'sync', 'ensure-path', 'compare')]
+    [ValidateSet('init', 'materialize', 'status', 'validate', 'sync', 'ensure-path', 'compare', 'dep-updates')]
     [string]$Command = 'status',
 
     [Parameter(Position = 1)]
@@ -75,6 +75,18 @@ function Get-WorkspaceRoot {
     Join-Path $Root ('workspaces\{0}' -f $WorkspaceName)
 }
 
+function Get-WorkspaceStateRoot {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Root,
+
+        [Parameter(Mandatory = $true)]
+        [string]$WorkspaceName
+    )
+
+    Join-Path (Get-WorkspaceRoot -Root $Root -WorkspaceName $WorkspaceName) 'state'
+}
+
 function Get-WorkspacePropsPath {
     param(
         [Parameter(Mandatory = $true)]
@@ -131,6 +143,17 @@ function Invoke-Checked {
     & $FilePath @ArgumentList
     if ($LASTEXITCODE -ne 0) {
         throw ("Command failed ({0} {1}) with exit code {2}" -f $FilePath, ($ArgumentList -join ' '), $LASTEXITCODE)
+    }
+}
+
+function Invoke-GitCapture {
+    param([Parameter(Mandatory = $true)][string[]]$ArgumentList)
+
+    $output = & git @ArgumentList 2>&1
+    [pscustomobject]@{
+        ExitCode = $LASTEXITCODE
+        Output = @($output)
+        Text = (@($output) -join "`n").Trim()
     }
 }
 
@@ -285,6 +308,527 @@ function Get-AllRepoConfigs {
     param([Parameter(Mandatory = $true)][hashtable]$Config)
 
     @($Config.AppRepo) + @($Config.Repos) + @($Config.AnalysisRepos) + @($Config.ThirdPartyRepos)
+}
+
+function Get-DepUpdatesRoot {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Root,
+
+        [Parameter(Mandatory = $true)]
+        [string]$WorkspaceName
+    )
+
+    Join-Path (Get-WorkspaceStateRoot -Root $Root -WorkspaceName $WorkspaceName) 'dep-updates'
+}
+
+function Get-DepUpdatesRunStamp {
+    if (-not (Get-Variable -Name DepUpdatesRunStamp -Scope Script -ErrorAction SilentlyContinue)) {
+        $script:DepUpdatesRunStamp = Get-Date -Format 'yyyyMMdd-HHmmss'
+    }
+
+    $script:DepUpdatesRunStamp
+}
+
+function Get-DepUpdatesRunDirectory {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Root,
+
+        [Parameter(Mandatory = $true)]
+        [string]$WorkspaceName
+    )
+
+    Join-Path (Get-DepUpdatesRoot -Root $Root -WorkspaceName $WorkspaceName) (Get-DepUpdatesRunStamp)
+}
+
+function Get-DepUpdatesLatestPath {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Root,
+
+        [Parameter(Mandatory = $true)]
+        [string]$WorkspaceName
+    )
+
+    Join-Path (Get-DepUpdatesRoot -Root $Root -WorkspaceName $WorkspaceName) 'latest.json'
+}
+
+function Get-ShortCommit {
+    param([string]$Commit)
+
+    if ([string]::IsNullOrWhiteSpace($Commit)) {
+        return ''
+    }
+
+    if ($Commit.Length -le 8) {
+        return $Commit
+    }
+
+    $Commit.Substring(0, 8)
+}
+
+function ConvertTo-VersionValue {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Value,
+
+        [Parameter(Mandatory = $true)]
+        [string]$Pattern
+    )
+
+    if ($Value -match $Pattern) {
+        try {
+            return [version]"$($Matches[1]).$($Matches[2]).$($Matches[3])"
+        } catch {
+            return $null
+        }
+    }
+
+    $null
+}
+
+function Find-NewerMatchingTags {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string[]]$Tags,
+
+        [Parameter(Mandatory = $true)]
+        [string]$Pattern,
+
+        [Parameter(Mandatory = $true)]
+        [version]$BaselineVersion
+    )
+
+    $candidates = foreach ($tag in $Tags) {
+        $versionValue = ConvertTo-VersionValue -Value $tag -Pattern $Pattern
+        if ($null -ne $versionValue) {
+            [pscustomobject]@{
+                Tag = $tag
+                Version = $versionValue
+            }
+        }
+    }
+
+    @($candidates | Where-Object { $_.Version -gt $BaselineVersion } | Sort-Object Version -Descending)
+}
+
+function Get-RemoteTags {
+    param([Parameter(Mandatory = $true)][string]$RemoteUrl)
+
+    $result = Invoke-GitCapture -ArgumentList @('ls-remote', '--tags', '--refs', $RemoteUrl)
+    if ($result.ExitCode -ne 0) {
+        throw "git ls-remote --tags failed for '$RemoteUrl': $($result.Text)"
+    }
+
+    foreach ($line in $result.Output) {
+        if ($line -match '^[0-9a-f]{40}\s+refs/tags/(.+)$') {
+            $Matches[1]
+        }
+    }
+}
+
+function Get-RemoteHeadInfo {
+    param([Parameter(Mandatory = $true)][string]$RemoteUrl)
+
+    $result = Invoke-GitCapture -ArgumentList @('ls-remote', '--symref', $RemoteUrl, 'HEAD')
+    if ($result.ExitCode -ne 0) {
+        throw "git ls-remote --symref failed for '$RemoteUrl': $($result.Text)"
+    }
+
+    $resolvedRef = ''
+    $commit = ''
+    foreach ($line in $result.Output) {
+        if ($line -match '^ref:\s+(\S+)\s+HEAD$') {
+            $resolvedRef = $Matches[1]
+            continue
+        }
+        if ($line -match '^([0-9a-f]{40})\s+HEAD$') {
+            $commit = $Matches[1]
+        }
+    }
+
+    if ([string]::IsNullOrWhiteSpace($resolvedRef) -or [string]::IsNullOrWhiteSpace($commit)) {
+        throw "Unable to resolve remote HEAD for '$RemoteUrl'."
+    }
+
+    [pscustomobject]@{
+        RequestedRef = 'HEAD'
+        ResolvedRef = $resolvedRef
+        Commit = $commit
+    }
+}
+
+function Get-RemoteBranchHeadInfo {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$RemoteUrl,
+
+        [Parameter(Mandatory = $true)]
+        [string]$BranchName
+    )
+
+    $resolvedRef = "refs/heads/$BranchName"
+    $result = Invoke-GitCapture -ArgumentList @('ls-remote', $RemoteUrl, $resolvedRef)
+    if ($result.ExitCode -ne 0) {
+        throw "git ls-remote failed for '$RemoteUrl' branch '$BranchName': $($result.Text)"
+    }
+
+    $line = @($result.Output | Select-Object -First 1)[0]
+    if ([string]::IsNullOrWhiteSpace($line) -or $line -notmatch '^([0-9a-f]{40})\s+(\S+)$') {
+        throw "Unable to resolve upstream branch '$BranchName' for '$RemoteUrl'."
+    }
+
+    [pscustomobject]@{
+        RequestedRef = $BranchName
+        ResolvedRef = $Matches[2]
+        Commit = $Matches[1]
+    }
+}
+
+function Get-LocalGitState {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$RepoPath,
+
+        [Parameter(Mandatory = $true)]
+        [string]$Name
+    )
+
+    if (-not (Test-Path -LiteralPath $RepoPath -PathType Container)) {
+        return [pscustomobject]@{
+            Exists = $false
+            Branch = ''
+            Head = ''
+            Dirty = $false
+        }
+    }
+
+    $status = Get-RepoStatusObject -RepoPath $RepoPath -Name $Name
+    [pscustomobject]@{
+        Exists = $true
+        Branch = $status.Branch
+        Head = $status.Head
+        Dirty = $status.Dirty
+    }
+}
+
+function Get-DepUpdateTrackingResult {
+    param(
+        [Parameter(Mandatory = $true)]
+        [hashtable]$Policy,
+
+        [Parameter(Mandatory = $true)]
+        [string]$Label
+    )
+
+    if (-not $Policy.ContainsKey('TrackingMode')) {
+        throw "Dependency update policy for '$Label' is missing TrackingMode."
+    }
+
+    $trackingMode = [string]$Policy.TrackingMode
+    $baselineRef = if ($Policy.ContainsKey('BaselineRef')) { [string]$Policy.BaselineRef } else { '' }
+    $notes = if ($Policy.ContainsKey('Notes')) { [string]$Policy.Notes } else { '' }
+    $upstreamUrl = if ($Policy.ContainsKey('UpstreamUrl')) { [string]$Policy.UpstreamUrl } else { '' }
+    $upstreamRef = if ($Policy.ContainsKey('UpstreamRef')) { [string]$Policy.UpstreamRef } else { '' }
+
+    switch ($trackingMode) {
+        'none' {
+            return [pscustomobject]@{
+                Status = 'fork-only'
+                Current = $baselineRef
+                Latest = 'N/A'
+                Detail = if ([string]::IsNullOrWhiteSpace($notes)) { 'no automated upstream comparison configured' } else { $notes }
+                ResolvedUpstreamRef = ''
+                UpstreamLatestRevision = ''
+            }
+        }
+        'tag' {
+            if ([string]::IsNullOrWhiteSpace($upstreamUrl)) {
+                throw "Dependency update policy for '$Label' is missing UpstreamUrl."
+            }
+            if ([string]::IsNullOrWhiteSpace($baselineRef)) {
+                throw "Dependency update policy for '$Label' is missing BaselineRef."
+            }
+            if (-not $Policy.ContainsKey('VersionPattern') -or [string]::IsNullOrWhiteSpace([string]$Policy.VersionPattern)) {
+                throw "Dependency update policy for '$Label' is missing VersionPattern."
+            }
+
+            $versionPattern = [string]$Policy.VersionPattern
+            $baselineVersion = ConvertTo-VersionValue -Value $baselineRef -Pattern $versionPattern
+            if ($null -eq $baselineVersion) {
+                throw "Unable to parse baseline ref '$baselineRef' for '$Label' with pattern '$versionPattern'."
+            }
+
+            $remoteTags = @(Get-RemoteTags -RemoteUrl $upstreamUrl)
+            $newerTags = @(Find-NewerMatchingTags -Tags $remoteTags -Pattern $versionPattern -BaselineVersion $baselineVersion)
+            $latestTag = if ($newerTags.Count -gt 0) { $newerTags[0].Tag } else { $baselineRef }
+            $detail = if ($newerTags.Count -gt 0) {
+                "{0} newer matching release(s) available" -f $newerTags.Count
+            } else {
+                'on latest matching release'
+            }
+
+            return [pscustomobject]@{
+                Status = if ($newerTags.Count -gt 0) { 'candidate-update' } else { 'up-to-date' }
+                Current = $baselineRef
+                Latest = $latestTag
+                Detail = $detail
+                ResolvedUpstreamRef = ''
+                UpstreamLatestRevision = ''
+            }
+        }
+        'branch-head' {
+            if ([string]::IsNullOrWhiteSpace($upstreamUrl)) {
+                throw "Dependency update policy for '$Label' is missing UpstreamUrl."
+            }
+            if ([string]::IsNullOrWhiteSpace($baselineRef)) {
+                throw "Dependency update policy for '$Label' is missing BaselineRef."
+            }
+
+            $remoteInfo = if ([string]::IsNullOrWhiteSpace($upstreamRef) -or $upstreamRef -eq 'HEAD') {
+                Get-RemoteHeadInfo -RemoteUrl $upstreamUrl
+            } else {
+                Get-RemoteBranchHeadInfo -RemoteUrl $upstreamUrl -BranchName $upstreamRef
+            }
+
+            $isCurrent = ($remoteInfo.Commit -eq $baselineRef)
+            return [pscustomobject]@{
+                Status = if ($isCurrent) { 'up-to-date' } else { 'candidate-update' }
+                Current = Get-ShortCommit -Commit $baselineRef
+                Latest = Get-ShortCommit -Commit $remoteInfo.Commit
+                Detail = if ($isCurrent) {
+                    "matches upstream $($remoteInfo.ResolvedRef)"
+                } else {
+                    "upstream $($remoteInfo.ResolvedRef) differs from pinned baseline"
+                }
+                ResolvedUpstreamRef = $remoteInfo.ResolvedRef
+                UpstreamLatestRevision = $remoteInfo.Commit
+            }
+        }
+        default {
+            throw "Unsupported TrackingMode '$trackingMode' for '$Label'."
+        }
+    }
+}
+
+function New-DepUpdateEntry {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Name,
+
+        [Parameter(Mandatory = $true)]
+        [string]$RelativePath,
+
+        [Parameter(Mandatory = $true)]
+        [string]$RepoPath,
+
+        [string]$PinnedBranch,
+
+        [Parameter(Mandatory = $true)]
+        [hashtable]$Policy,
+
+        [Parameter(Mandatory = $true)]
+        [string]$Label
+    )
+
+    $localState = Get-LocalGitState -RepoPath $RepoPath -Name $Name
+    $entry = [ordered]@{
+        Name = $Name
+        RelativePath = $RelativePath
+        PinnedBranch = $PinnedBranch
+        Exists = $localState.Exists
+        LocalBranch = $localState.Branch
+        LocalHead = $localState.Head
+        LocalDirty = $localState.Dirty
+        TrackingMode = if ($Policy.ContainsKey('TrackingMode')) { [string]$Policy.TrackingMode } else { '' }
+        BaselineRef = if ($Policy.ContainsKey('BaselineRef')) { [string]$Policy.BaselineRef } else { '' }
+        UpstreamUrl = if ($Policy.ContainsKey('UpstreamUrl')) { [string]$Policy.UpstreamUrl } else { '' }
+        UpstreamRef = if ($Policy.ContainsKey('UpstreamRef')) { [string]$Policy.UpstreamRef } else { '' }
+        ResolvedUpstreamRef = ''
+        UpstreamLatestRevision = ''
+        Current = ''
+        Latest = ''
+        Status = ''
+        Detail = ''
+        Notes = if ($Policy.ContainsKey('Notes')) { [string]$Policy.Notes } else { '' }
+        ChildComponents = @()
+    }
+
+    try {
+        if (-not $localState.Exists) {
+            throw "Pinned dependency path is missing: $RepoPath"
+        }
+
+        $tracking = Get-DepUpdateTrackingResult -Policy $Policy -Label $Label
+        $entry.Current = $tracking.Current
+        $entry.Latest = $tracking.Latest
+        $entry.Status = $tracking.Status
+        $entry.Detail = $tracking.Detail
+        $entry.ResolvedUpstreamRef = $tracking.ResolvedUpstreamRef
+        $entry.UpstreamLatestRevision = $tracking.UpstreamLatestRevision
+    } catch {
+        $entry.Status = 'error'
+        $entry.Current = if ($entry.BaselineRef) { $entry.BaselineRef } else { '' }
+        $entry.Latest = '?'
+        $entry.Detail = $_.Exception.Message
+    }
+
+    [pscustomobject]$entry
+}
+
+function Get-DepUpdateEntries {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Root,
+
+        [Parameter(Mandatory = $true)]
+        [hashtable]$Config
+    )
+
+    $entries = [System.Collections.Generic.List[object]]::new()
+    foreach ($repo in @($Config.ThirdPartyRepos)) {
+        if (-not $repo.ContainsKey('UpdatePolicy')) {
+            throw "Third-party repo '$($repo.Name)' is missing UpdatePolicy metadata."
+        }
+
+        $policy = @{} + $repo.UpdatePolicy
+        $repoPath = Get-RepoPath -Root $Root -Repo $repo
+        $entry = New-DepUpdateEntry -Name $repo.Name -RelativePath $repo.RelativePath -RepoPath $repoPath -PinnedBranch $repo.Branch -Policy $policy -Label $repo.Name
+
+        $children = [System.Collections.Generic.List[object]]::new()
+        $childComponents = if ($policy.ContainsKey('ChildComponents')) { @($policy.ChildComponents) } else { @() }
+        foreach ($child in $childComponents) {
+            $childPolicy = @{} + $child
+            $childName = [string]$childPolicy.Name
+            if ([string]::IsNullOrWhiteSpace($childName)) {
+                throw "Child component metadata for '$($repo.Name)' is missing Name."
+            }
+
+            $childRelativePath = if ($childPolicy.ContainsKey('RelativePath')) {
+                Join-Path $repo.RelativePath ([string]$childPolicy.RelativePath)
+            } else {
+                $repo.RelativePath
+            }
+            $childRepoPath = if ($childPolicy.ContainsKey('RelativePath')) {
+                Join-Path $repoPath ([string]$childPolicy.RelativePath)
+            } else {
+                $repoPath
+            }
+
+            $children.Add((New-DepUpdateEntry -Name $childName -RelativePath $childRelativePath -RepoPath $childRepoPath -PinnedBranch '' -Policy $childPolicy -Label ("{0}/{1}" -f $repo.Name, $childName))) | Out-Null
+        }
+
+        $entry.ChildComponents = @($children)
+        $entries.Add($entry) | Out-Null
+    }
+
+    @($entries)
+}
+
+function Get-DepUpdateCounts {
+    param([Parameter(Mandatory = $true)][object[]]$Entries)
+
+    $counts = [ordered]@{
+        'up-to-date' = @($Entries | Where-Object { $_.Status -eq 'up-to-date' }).Count
+        'candidate-update' = @($Entries | Where-Object { $_.Status -eq 'candidate-update' }).Count
+        'fork-only' = @($Entries | Where-Object { $_.Status -eq 'fork-only' }).Count
+        'error' = @($Entries | Where-Object { $_.Status -eq 'error' }).Count
+    }
+
+    [pscustomobject]$counts
+}
+
+function Get-DepUpdateStatusColor {
+    param([Parameter(Mandatory = $true)][string]$Status)
+
+    switch ($Status) {
+        'up-to-date' { 'Green' }
+        'candidate-update' { 'Yellow' }
+        'fork-only' { 'DarkGray' }
+        'error' { 'Red' }
+        default { 'White' }
+    }
+}
+
+function Write-DepUpdateConsoleReport {
+    param(
+        [Parameter(Mandatory = $true)]
+        [object[]]$Entries,
+
+        [Parameter(Mandatory = $true)]
+        [string]$SummaryPath
+    )
+
+    $format = "  {0,-24} {1,-12} {2,-18} {3,-18} {4,-17} {5}"
+
+    Write-Host ''
+    Write-Host 'Dependency update advisory report' -ForegroundColor Cyan
+    Write-Host ''
+    Write-Host ($format -f 'DEPENDENCY', 'TRACKING', 'CURRENT', 'LATEST', 'STATUS', 'DETAIL') -ForegroundColor DarkGray
+    Write-Host ('  ' + ('-' * 110)) -ForegroundColor DarkGray
+
+    foreach ($entry in $Entries) {
+        Write-Host ($format -f $entry.Name, $entry.TrackingMode, $entry.Current, $entry.Latest, $entry.Status, $entry.Detail) -ForegroundColor (Get-DepUpdateStatusColor -Status $entry.Status)
+        foreach ($child in @($entry.ChildComponents)) {
+            Write-Host ($format -f ("  + $($child.Name)"), $child.TrackingMode, $child.Current, $child.Latest, $child.Status, $child.Detail) -ForegroundColor (Get-DepUpdateStatusColor -Status $child.Status)
+        }
+    }
+
+    $topLevelCounts = Get-DepUpdateCounts -Entries $Entries
+    $childEntries = foreach ($entry in $Entries) { @($entry.ChildComponents) }
+    $childCounts = Get-DepUpdateCounts -Entries @($childEntries)
+
+    Write-Host ('  ' + ('-' * 110)) -ForegroundColor DarkGray
+    Write-Host ''
+    Write-Host ('  Top-level counts: up-to-date={0} candidate-update={1} fork-only={2} error={3}' -f $topLevelCounts.'up-to-date', $topLevelCounts.'candidate-update', $topLevelCounts.'fork-only', $topLevelCounts.error)
+    if (@($childEntries).Count -gt 0) {
+        Write-Host ('  Child counts:     up-to-date={0} candidate-update={1} fork-only={2} error={3}' -f $childCounts.'up-to-date', $childCounts.'candidate-update', $childCounts.'fork-only', $childCounts.error)
+    }
+    Write-Host ("  JSON report: $SummaryPath")
+    Write-Host ''
+}
+
+function Write-DepUpdateArtifacts {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Root,
+
+        [Parameter(Mandatory = $true)]
+        [string]$WorkspaceName,
+
+        [Parameter(Mandatory = $true)]
+        [object[]]$Entries
+    )
+
+    $depUpdatesRoot = Get-DepUpdatesRoot -Root $Root -WorkspaceName $WorkspaceName
+    $runDirectory = Get-DepUpdatesRunDirectory -Root $Root -WorkspaceName $WorkspaceName
+    Ensure-Directory -Path $depUpdatesRoot
+    Ensure-Directory -Path $runDirectory
+
+    $childEntries = foreach ($entry in $Entries) { @($entry.ChildComponents) }
+    $report = [ordered]@{
+        WorkspaceRoot = $Root
+        WorkspaceName = $WorkspaceName
+        GeneratedAt = (Get-Date).ToString('o')
+        SetupRepoRoot = Get-ScriptRoot
+        Counts = Get-DepUpdateCounts -Entries $Entries
+        ChildComponentCounts = Get-DepUpdateCounts -Entries @($childEntries)
+        Dependencies = @($Entries)
+    }
+
+    $json = $report | ConvertTo-Json -Depth 20
+    $summaryPath = Join-Path $runDirectory 'summary.json'
+    $latestPath = Get-DepUpdatesLatestPath -Root $Root -WorkspaceName $WorkspaceName
+    Set-Content -LiteralPath $summaryPath -Value $json -Encoding utf8
+    Set-Content -LiteralPath $latestPath -Value $json -Encoding utf8
+
+    [pscustomobject]@{
+        SummaryPath = $summaryPath
+        LatestPath = $latestPath
+        Counts = $report.Counts
+        ChildComponentCounts = $report.ChildComponentCounts
+    }
 }
 
 function Get-ManagedAppWorktrees {
@@ -1391,6 +1935,32 @@ function Invoke-Status {
     }
 }
 
+function Invoke-DepUpdates {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Root,
+
+        [Parameter(Mandatory = $true)]
+        [hashtable]$Config,
+
+        [Parameter(Mandatory = $true)]
+        [string]$WorkspaceName
+    )
+
+    $workspaceRoot = Get-WorkspaceRoot -Root $Root -WorkspaceName $WorkspaceName
+    if (-not (Test-Path -LiteralPath $workspaceRoot -PathType Container)) {
+        throw "Workspace root is missing: $workspaceRoot. Run init, materialize, or sync first."
+    }
+
+    $entries = Get-DepUpdateEntries -Root $Root -Config $Config
+    $artifacts = Write-DepUpdateArtifacts -Root $Root -WorkspaceName $WorkspaceName -Entries $entries
+    Write-DepUpdateConsoleReport -Entries $entries -SummaryPath $artifacts.SummaryPath
+
+    if ($artifacts.Counts.error -gt 0 -or $artifacts.ChildComponentCounts.error -gt 0) {
+        throw "Dependency update report completed with errors. See $($artifacts.SummaryPath)."
+    }
+}
+
 function Invoke-Validate {
     param(
         [Parameter(Mandatory = $true)]
@@ -1495,10 +2065,15 @@ $resolvedWorkspaceName = Resolve-WorkspaceName -Config $config -OverrideName $Wo
 
 switch ($Command) {
     'ensure-path' { Ensure-RequiredTools -PersistMode $Persist; break }
-    'sync' { Invoke-Init -Root $resolvedRoot -Config $config -WorkspaceName $resolvedWorkspaceName -SeedRoot $ArtifactsSeedRoot; break }
+    'sync' {
+        Invoke-Init -Root $resolvedRoot -Config $config -WorkspaceName $resolvedWorkspaceName -SeedRoot $ArtifactsSeedRoot
+        Ensure-AppWorktrees -Root $resolvedRoot -Config $config
+        break
+    }
     'init' { Invoke-Init -Root $resolvedRoot -Config $config -WorkspaceName $resolvedWorkspaceName -SeedRoot $ArtifactsSeedRoot; break }
     'materialize' { Invoke-Materialize -Root $resolvedRoot -Config $config -WorkspaceName $resolvedWorkspaceName -SeedRoot $ArtifactsSeedRoot; break }
     'status' { Invoke-Status -Root $resolvedRoot -Config $config; break }
+    'dep-updates' { Invoke-DepUpdates -Root $resolvedRoot -Config $config -WorkspaceName $resolvedWorkspaceName; break }
     'validate' { Invoke-Validate -Root $resolvedRoot -Config $config -WorkspaceName $resolvedWorkspaceName; break }
     'compare' { Invoke-Compare -Root $resolvedRoot -Config $config -Key $CompareKey; break }
     default { throw "Unsupported command '$Command'." }
