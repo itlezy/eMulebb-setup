@@ -863,7 +863,8 @@ function Get-HookInstallTargets {
     )
 
     $targets = [System.Collections.Generic.List[string]]::new()
-    foreach ($repo in @($Config.Repos | Where-Object { $_.Name -in @('eMule-build', 'eMule-build-tests', 'eMule-tooling') })) {
+    $targets.Add((Get-ScriptRoot)) | Out-Null
+    foreach ($repo in @($Config.Repos | Where-Object { $_.Name -in @('eMule-build', 'eMule-build-tests', 'eMule-tooling', 'eMule-remote') })) {
         $targets.Add((Get-RepoPath -Root $Root -Repo $repo)) | Out-Null
     }
     foreach ($worktree in @(Get-ManagedAppWorktrees -Config $Config)) {
@@ -1866,6 +1867,17 @@ function Assert-WorkspaceHooksInstalled {
         if ($resolvedHooksPath -ne $expectedHooksPath) {
             throw "Resolved hooks path drift detected for '$targetPath'. Expected '$expectedHooksPath', found '$resolvedHooksPath'."
         }
+
+        $autocrlfOutput = & git -C $targetPath config --local --get core.autocrlf 2>$null
+        $autocrlf = if ($LASTEXITCODE -eq 0 -and -not [string]::IsNullOrWhiteSpace($autocrlfOutput)) {
+            $autocrlfOutput.Trim()
+        } else {
+            ''
+        }
+
+        if ($autocrlf -ne 'false') {
+            throw "Line-ending config drift detected for '$targetPath'. Expected core.autocrlf false."
+        }
     }
 }
 
@@ -2077,6 +2089,7 @@ switch ($Command) {
     'sync' {
         Invoke-Init -Root $resolvedRoot -Config $config -WorkspaceName $resolvedWorkspaceName -SeedRoot $ArtifactsSeedRoot
         Ensure-AppWorktrees -Root $resolvedRoot -Config $config
+        Install-WorkspaceHooks -Root $resolvedRoot -Config $config
         break
     }
     'init' { Invoke-Init -Root $resolvedRoot -Config $config -WorkspaceName $resolvedWorkspaceName -SeedRoot $ArtifactsSeedRoot; break }
