@@ -22,33 +22,21 @@
                 Active = $true
             }
             @{
-                Name = 'oracle'
-                Branch = 'oracle/v0.72a-build'
-                RelativePath = 'workspaces\v0.72a\app\eMule-v0.72a-oracle'
+                Name = 'community'
+                Branch = 'release/v0.72a-community'
+                RelativePath = 'workspaces\v0.72a\app\eMule-v0.72a-community'
                 Active = $true
             }
             @{
-                Name = 'build'
-                Branch = 'release/v0.72a-build'
-                RelativePath = 'workspaces\v0.72a\app\eMule-v0.72a-build'
-                Active = $true
-            }
-            @{
-                Name = 'bugfix'
-                Branch = 'release/v0.72a-bugfix'
-                RelativePath = 'workspaces\v0.72a\app\eMule-v0.72a-bugfix'
-                Active = $true
-            }
-            @{
-                Name = 'tracing'
-                Branch = 'tracing/v0.72a'
-                RelativePath = 'workspaces\v0.72a\app\eMule-v0.72a-tracing'
+                Name = 'broadband'
+                Branch = 'release/v0.72a-broadband'
+                RelativePath = 'workspaces\v0.72a\app\eMule-v0.72a-broadband'
                 Active = $true
             }
             @{
                 Name = 'tracing-harness'
-                Branch = 'tracing-harness/v0.72a'
-                RelativePath = 'workspaces\v0.72a\app\eMule-v0.72a-tracing-harness'
+                Branch = 'tracing-harness/v0.72a-community'
+                RelativePath = 'workspaces\v0.72a\app\eMule-v0.72a-tracing-harness-community'
                 Active = $true
             }
         )

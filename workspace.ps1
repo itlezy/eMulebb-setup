@@ -1345,6 +1345,11 @@ function Ensure-AppBranches {
     )
 
     foreach ($worktree in @(Get-ManagedAppWorktrees -Config $Config)) {
+        $branchExists = (& git -C $RepoPath show-ref --verify --quiet ("refs/heads/{0}" -f $worktree.Branch)); $branchExitCode = $LASTEXITCODE
+        if ($branchExitCode -eq 0) {
+            continue
+        }
+
         Invoke-Checked -FilePath 'git' -ArgumentList @('-C', $RepoPath, 'fetch', 'origin', ("refs/heads/{0}:refs/remotes/origin/{0}" -f $worktree.Branch))
         $branchExists = (& git -C $RepoPath show-ref --verify --quiet ("refs/heads/{0}" -f $worktree.Branch)); $branchExitCode = $LASTEXITCODE
         if ($branchExitCode -ne 0) {
@@ -1398,7 +1403,11 @@ function Ensure-AppWorktrees {
                 Write-Warning "Worktree '$targetPath' is dirty; skipping fast-forward for managed branch '$($worktree.Branch)'."
                 continue
             }
-            Invoke-Checked -FilePath 'git' -ArgumentList @('-C', $targetPath, 'merge', '--ff-only', ("refs/remotes/origin/{0}" -f $worktree.Branch))
+            $remoteBranch = "refs/remotes/origin/{0}" -f $worktree.Branch
+            & git -C $targetPath show-ref --verify --quiet $remoteBranch
+            if ($LASTEXITCODE -eq 0) {
+                Invoke-Checked -FilePath 'git' -ArgumentList @('-C', $targetPath, 'merge', '--ff-only', $remoteBranch)
+            }
         }
     }
 }
