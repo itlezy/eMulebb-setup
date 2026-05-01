@@ -19,6 +19,7 @@ EMULE_WORKSPACE_ROOT\
       eMule-libpcpnatpmp\
       eMule-mbedtls\
       eMule-miniupnp\
+      eMule-nlohmann-json\
       eMule-ResizableLib\
       eMule-zlib\
   workspaces\

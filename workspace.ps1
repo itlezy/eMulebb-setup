@@ -1497,10 +1497,11 @@ function Write-WorkspaceProps {
     <WorkspaceRoot>$([MSBuild]::EnsureTrailingSlash('$(WorkspaceRoot)'))</WorkspaceRoot>
     <ReposRoot>$(WorkspaceRoot)repos\</ReposRoot>
     <ThirdPartyRoot>$(ReposRoot)third_party\</ThirdPartyRoot>
+    <NlohmannJsonRoot>$(ThirdPartyRoot)eMule-nlohmann-json\single_include\</NlohmannJsonRoot>
   </PropertyGroup>
   <ItemDefinitionGroup>
     <ClCompile>
-      <AdditionalIncludeDirectories>$(ThirdPartyRoot)eMule-cryptopp;$(ThirdPartyRoot)eMule-ResizableLib;$(ThirdPartyRoot)eMule-zlib;$(ThirdPartyRoot)eMule-miniupnp;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>$(NlohmannJsonRoot);$(ThirdPartyRoot)eMule-cryptopp;$(ThirdPartyRoot)eMule-ResizableLib;$(ThirdPartyRoot)eMule-zlib;$(ThirdPartyRoot)eMule-miniupnp;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
     </ClCompile>
   </ItemDefinitionGroup>
 </Project>

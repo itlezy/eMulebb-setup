@@ -195,6 +195,18 @@
             }
         }
         @{
+            Name = 'eMule-nlohmann-json'
+            Url = 'https://github.com/itlezy/eMule-nlohmann-json.git'
+            RelativePath = 'repos\third_party\eMule-nlohmann-json'
+            Branch = 'json-v3.11.3-emule'
+            UpdatePolicy = @{
+                UpstreamUrl = 'https://github.com/nlohmann/json.git'
+                TrackingMode = 'tag'
+                BaselineRef = 'v3.11.3'
+                VersionPattern = '^v(\d+)\.(\d+)\.(\d+)$'
+            }
+        }
+        @{
             Name = 'eMule-zlib'
             Url = 'https://github.com/itlezy/eMule-zlib.git'
             RelativePath = 'repos\third_party\eMule-zlib'
