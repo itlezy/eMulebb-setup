@@ -61,10 +61,16 @@
             Branch = 'main'
         }
         @{
-            Name = 'eMule-remote'
-            Url = 'https://github.com/itlezy/eMule-remote.git'
-            RelativePath = 'repos\eMule-remote'
+            Name = 'amutorrent'
+            Url = 'https://github.com/itlezy/amutorrent.git'
+            RelativePath = 'repos\amutorrent'
             Branch = 'main'
+            AdditionalRemotes = @(
+                @{
+                    Name = 'upstream'
+                    Url = 'https://github.com/got3nks/amutorrent.git'
+                }
+            )
         }
     )
     AnalysisRepos = @(

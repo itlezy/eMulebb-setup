@@ -12,7 +12,7 @@ EMULE_WORKSPACE_ROOT\
     eMule-build\
     eMule-build-tests\
     eMule-tooling\
-    eMule-remote\
+    amutorrent\
     third_party\
       eMule-cryptopp\
       eMule-id3lib\
@@ -112,7 +112,7 @@ Use the repo-local READMEs for operational detail:
 - `repos\eMule-build-tests\README.md` for the shared harness model
 - `repos\eMule-tooling\README.md` and `repos\eMule-tooling\docs\INDEX.md` for
   deeper design notes, audits, and planning artifacts
-- `repos\eMule-remote\README.md` for the companion app runtime surface
+- `repos\amutorrent\README.md` for the companion web UI integration surface
 
 Repo-local `AGENTS.md` files are intentionally agent-facing and should stay
 short. They should capture repo-specific editing rules and point to the central

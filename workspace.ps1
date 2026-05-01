@@ -304,6 +304,41 @@ function Get-RepoPath {
     Join-Path $Root $Repo.RelativePath
 }
 
+function Ensure-RepoAdditionalRemotes {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$RepoPath,
+
+        [Parameter(Mandatory = $true)]
+        [hashtable]$Repo
+    )
+
+    if (-not $Repo.ContainsKey('AdditionalRemotes')) {
+        return
+    }
+
+    $remoteOutput = & git -C $RepoPath remote
+    if ($LASTEXITCODE -ne 0) {
+        throw "Unable to list git remotes for '$RepoPath'."
+    }
+
+    $existingRemotes = @($remoteOutput | ForEach-Object { $_.Trim() } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+    foreach ($remote in @($Repo.AdditionalRemotes)) {
+        $name = [string]$remote.Name
+        $url = [string]$remote.Url
+        if ([string]::IsNullOrWhiteSpace($name) -or [string]::IsNullOrWhiteSpace($url)) {
+            throw "Repo '$($Repo.Name)' has an invalid additional remote entry."
+        }
+
+        if ($existingRemotes -contains $name) {
+            Invoke-Checked -FilePath 'git' -ArgumentList @('-C', $RepoPath, 'remote', 'set-url', $name, $url)
+        } else {
+            Invoke-Checked -FilePath 'git' -ArgumentList @('-C', $RepoPath, 'remote', 'add', $name, $url)
+            $existingRemotes += $name
+        }
+    }
+}
+
 function Get-AllRepoConfigs {
     param([Parameter(Mandatory = $true)][hashtable]$Config)
 
@@ -864,7 +899,7 @@ function Get-HookInstallTargets {
 
     $targets = [System.Collections.Generic.List[string]]::new()
     $targets.Add((Get-ScriptRoot)) | Out-Null
-    foreach ($repo in @($Config.Repos | Where-Object { $_.Name -in @('eMule-build', 'eMule-build-tests', 'eMule-tooling', 'eMule-remote') })) {
+    foreach ($repo in @($Config.Repos | Where-Object { $_.Name -in @('eMule-build', 'eMule-build-tests', 'eMule-tooling') })) {
         $targets.Add((Get-RepoPath -Root $Root -Repo $repo)) | Out-Null
     }
     foreach ($worktree in @(Get-ManagedAppWorktrees -Config $Config)) {
@@ -1282,10 +1317,12 @@ function Ensure-RepoClone {
         }
         $cloneArgs += @($Repo.Url, $repoPath)
         Invoke-Checked -FilePath 'git' -ArgumentList $cloneArgs
+        Ensure-RepoAdditionalRemotes -RepoPath $repoPath -Repo $Repo
         return $repoPath
     }
 
     Invoke-Checked -FilePath 'git' -ArgumentList @('-C', $repoPath, 'fetch', 'origin', '--prune')
+    Ensure-RepoAdditionalRemotes -RepoPath $repoPath -Repo $Repo
     if (-not $Repo.ContainsKey('Worktrees')) {
         Invoke-Checked -FilePath 'git' -ArgumentList @('-C', $repoPath, 'checkout', $Repo.Branch)
         Invoke-Checked -FilePath 'git' -ArgumentList @('-C', $repoPath, 'pull', '--ff-only', 'origin', $Repo.Branch)
@@ -1508,7 +1545,7 @@ $($variantLines -join "`r`n")
             Build = '$($manifest.Workspace.Repos.Build)'
             Tests = '$($manifest.Workspace.Repos.Tests)'
             Tooling = '$($manifest.Workspace.Repos.Tooling)'
-            Remote = '$($manifest.Workspace.Repos.Remote)'
+            Amutorrent = '$($manifest.Workspace.Repos.Amutorrent)'
             ThirdParty = '$($manifest.Workspace.Repos.ThirdParty)'
         }
     }
@@ -1583,7 +1620,7 @@ function New-ExpectedWorkspaceManifestContract {
         @{ ContractKey = 'Build'; RepoName = 'eMule-build' }
         @{ ContractKey = 'Tests'; RepoName = 'eMule-build-tests' }
         @{ ContractKey = 'Tooling'; RepoName = 'eMule-tooling' }
-        @{ ContractKey = 'Remote'; RepoName = 'eMule-remote' }
+        @{ ContractKey = 'Amutorrent'; RepoName = 'amutorrent' }
     )) {
         if (-not $namedRepos.ContainsKey($entry.RepoName)) {
             throw "Setup config is missing repo '$($entry.RepoName)' required for the workspace manifest contract."
@@ -1654,7 +1691,7 @@ function ConvertTo-NormalizedWorkspaceManifestContract {
                 Build = Normalize-WorkspaceContractPath -Path ([string](Get-RequiredContractValue -Table $repos -Key 'Build' -Context 'manifest.Workspace.Repos'))
                 Tests = Normalize-WorkspaceContractPath -Path ([string](Get-RequiredContractValue -Table $repos -Key 'Tests' -Context 'manifest.Workspace.Repos'))
                 Tooling = Normalize-WorkspaceContractPath -Path ([string](Get-RequiredContractValue -Table $repos -Key 'Tooling' -Context 'manifest.Workspace.Repos'))
-                Remote = Normalize-WorkspaceContractPath -Path ([string](Get-RequiredContractValue -Table $repos -Key 'Remote' -Context 'manifest.Workspace.Repos'))
+                Amutorrent = Normalize-WorkspaceContractPath -Path ([string](Get-RequiredContractValue -Table $repos -Key 'Amutorrent' -Context 'manifest.Workspace.Repos'))
                 ThirdParty = Normalize-WorkspaceContractPath -Path ([string](Get-RequiredContractValue -Table $repos -Key 'ThirdParty' -Context 'manifest.Workspace.Repos'))
             }
         }
