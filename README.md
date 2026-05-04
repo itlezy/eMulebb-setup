@@ -79,10 +79,16 @@ pwsh -File .\repos\eMule-build\workspace.ps1 full        -EmuleWorkspaceRoot <wo
 
 - `EMULE_WORKSPACE_ROOT` must be provided either with `-EmuleWorkspaceRoot` or through the `EMULE_WORKSPACE_ROOT` environment variable.
 - `materialize` is a bootstrap-only command for a new empty workspace root. It refuses to run against an already populated workspace root.
-- `materialize` creates the canonical repo pool, the `v0.72a` workspace manifest, the shared workspace props file, and the active managed app worktrees for `main`, `community`, `broadband`, and `tracing-harness`.
+- `materialize` creates the canonical repo pool, the workspace-root `AGENTS.md`
+  policy pointer, the `v0.72a` workspace manifest, the shared workspace props
+  file, and the active managed app worktrees for `main`, `community`,
+  `broadband`, and `tracing-harness`.
 - `workspaces\v0.72a\deps.psd1` is a required generated contract file. It is setup-owned workspace state, and `validate` now fails if it drifts from the current setup topology.
-- `init` regenerates the workspace manifest contract and compare launchers for the current configured topology.
-- `sync` regenerates that setup-owned workspace state, refreshes managed app branch refs, and reconciles the canonical app anchor plus active managed app worktrees.
+- `init` regenerates the workspace-root `AGENTS.md`, workspace manifest
+  contract, and compare launchers for the current configured topology.
+- `sync` regenerates that setup-owned workspace state, refreshes managed app
+  branch refs, and reconciles the canonical app anchor plus active managed app
+  worktrees.
 - `dep-updates` is an advisory upstream report for setup-managed third-party dependencies. It reads setup-owned metadata from `repos.psd1`, prints a short console summary, and writes JSON artifacts under `workspaces\v0.72a\state\dep-updates`.
 - `tracing-harness` is the active managed parity harness worktree once its remote branch exists.
 - `materialize` also clones the comparison repos under `analysis`, including the stale experimental clean reference branch, and regenerates the WinMerge launchers under `analysis\compare`.

@@ -1349,10 +1349,46 @@ function Ensure-RootLayout {
     foreach ($relativePath in @($Config.RootDirectories)) {
         Ensure-Directory -Path (Join-Path $Root $relativePath)
     }
+    Write-RootAgentsFile -Root $Root
 
     $workspaceRoot = Get-WorkspaceRoot -Root $Root -WorkspaceName $WorkspaceName
     foreach ($relativePath in @('app', 'artifacts', 'logs', 'scripts', 'state')) {
         Ensure-Directory -Path (Join-Path $workspaceRoot $relativePath)
+    }
+}
+
+function Get-RootAgentsContent {
+    @'
+ANALYZE THIS WORKSPACE
+ALWAYS READ AND FOLLOW EMULE_WORKSPACE_ROOT\repos\eMule-tooling\docs\WORKSPACE_POLICY.md
+'@
+}
+
+function Write-RootAgentsFile {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Root
+    )
+
+    $agentsPath = Join-Path $Root 'AGENTS.md'
+    Set-Content -LiteralPath $agentsPath -Value (Get-RootAgentsContent) -Encoding ascii
+}
+
+function Assert-RootAgentsFile {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Root
+    )
+
+    $agentsPath = Join-Path $Root 'AGENTS.md'
+    if (-not (Test-Path -LiteralPath $agentsPath -PathType Leaf)) {
+        throw "Validation failed. Missing workspace root AGENTS.md: $agentsPath. Run sync to regenerate setup-owned workspace files."
+    }
+
+    $actual = (Get-Content -LiteralPath $agentsPath -Raw).Trim()
+    $expected = (Get-RootAgentsContent).Trim()
+    if ($actual -ne $expected) {
+        throw "Validation failed. Workspace root AGENTS.md drifted from setup-owned content: $agentsPath. Run sync to regenerate setup-owned workspace files."
     }
 }
 
@@ -2046,6 +2082,7 @@ function Invoke-Validate {
         $requiredPaths += (Get-RepoPath -Root $Root -Repo $repo)
     }
     $requiredPaths += (Get-CompareOutputRoot -Root $Root)
+    $requiredPaths += (Join-Path $Root 'AGENTS.md')
 
     $missing = @($requiredPaths | Where-Object { -not (Test-Path -LiteralPath $_) })
     if ($missing.Count -gt 0) {
@@ -2053,6 +2090,7 @@ function Invoke-Validate {
     }
 
     Assert-WorkspaceManifestContract -Root $Root -Config $Config -WorkspaceName $WorkspaceName
+    Assert-RootAgentsFile -Root $Root
 
     $null = Get-WinMergePath
     foreach ($target in Get-LocalVariantCompareTargets -Root $Root -Config $Config) {
