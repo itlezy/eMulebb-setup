@@ -11,7 +11,7 @@
     )
     AppRepo = @{
         Name = 'eMule'
-        Url = 'https://github.com/itlezy/eMule.git'
+        Url = 'https://github.com/eMulebb/eMule.git'
         RelativePath = 'repos\eMule'
         Branch = 'main'
         Worktrees = @(
@@ -44,19 +44,19 @@
     Repos = @(
         @{
             Name = 'eMule-build'
-            Url = 'https://github.com/itlezy/eMule-build.git'
+            Url = 'https://github.com/eMulebb/eMule-build.git'
             RelativePath = 'repos\eMule-build'
             Branch = 'main'
         }
         @{
             Name = 'eMule-build-tests'
-            Url = 'https://github.com/itlezy/eMule-build-tests.git'
+            Url = 'https://github.com/eMulebb/eMule-build-tests.git'
             RelativePath = 'repos\eMule-build-tests'
             Branch = 'main'
         }
         @{
             Name = 'eMule-tooling'
-            Url = 'https://github.com/itlezy/eMule-tooling.git'
+            Url = 'https://github.com/eMulebb/eMule-tooling.git'
             RelativePath = 'repos\eMule-tooling'
             Branch = 'main'
         }
@@ -105,7 +105,7 @@
         }
         @{
             Name = 'stale-v0.72a-experimental-clean'
-            Url = 'https://github.com/itlezy/eMule.git'
+            Url = 'https://github.com/eMulebb/eMule.git'
             RelativePath = 'analysis\stale-v0.72a-experimental-clean'
             Branch = 'stale/v0.72a-experimental-clean'
             CompareSubdir = 'srchybrid'
@@ -114,7 +114,7 @@
     ThirdPartyRepos = @(
         @{
             Name = 'eMule-cryptopp'
-            Url = 'https://github.com/itlezy/eMule-cryptopp.git'
+            Url = 'https://github.com/eMulebb/eMule-cryptopp.git'
             RelativePath = 'repos\third_party\eMule-cryptopp'
             Branch = 'CRYPTOPP_8_4_0-pristine'
             UpdatePolicy = @{
@@ -126,7 +126,7 @@
         }
         @{
             Name = 'eMule-id3lib'
-            Url = 'https://github.com/itlezy/eMule-id3lib.git'
+            Url = 'https://github.com/eMulebb/eMule-id3lib.git'
             RelativePath = 'repos\third_party\eMule-id3lib'
             Branch = 'id3lib-v3.9.1-emule'
             UpdatePolicy = @{
@@ -137,7 +137,7 @@
         }
         @{
             Name = 'eMule-mbedtls'
-            Url = 'https://github.com/itlezy/eMule-mbedtls.git'
+            Url = 'https://github.com/eMulebb/eMule-mbedtls.git'
             RelativePath = 'repos\third_party\eMule-mbedtls'
             Branch = 'mbedtls-v4.1.0-emule'
             HasSubmodules = $true
@@ -160,7 +160,7 @@
         }
         @{
             Name = 'eMule-miniupnp'
-            Url = 'https://github.com/itlezy/eMule-miniupnp.git'
+            Url = 'https://github.com/eMulebb/eMule-miniupnp.git'
             RelativePath = 'repos\third_party\eMule-miniupnp'
             Branch = 'miniupnpc-master-emule'
             UpdatePolicy = @{
@@ -172,7 +172,7 @@
         }
         @{
             Name = 'eMule-libpcpnatpmp'
-            Url = 'https://github.com/itlezy/eMule-libpcpnatpmp.git'
+            Url = 'https://github.com/eMulebb/eMule-libpcpnatpmp.git'
             RelativePath = 'repos\third_party\eMule-libpcpnatpmp'
             Branch = 'libpcpnatpmp-master-emule'
             UpdatePolicy = @{
@@ -184,7 +184,7 @@
         }
         @{
             Name = 'eMule-ResizableLib'
-            Url = 'https://github.com/itlezy/eMule-ResizableLib.git'
+            Url = 'https://github.com/eMulebb/eMule-ResizableLib.git'
             RelativePath = 'repos\third_party\eMule-ResizableLib'
             Branch = 'ResizableLib-bebab50-emule'
             UpdatePolicy = @{
@@ -196,7 +196,7 @@
         }
         @{
             Name = 'eMule-nlohmann-json'
-            Url = 'https://github.com/itlezy/eMule-nlohmann-json.git'
+            Url = 'https://github.com/eMulebb/eMule-nlohmann-json.git'
             RelativePath = 'repos\third_party\eMule-nlohmann-json'
             Branch = 'json-v3.11.3-emule'
             UpdatePolicy = @{
@@ -208,7 +208,7 @@
         }
         @{
             Name = 'eMule-zlib'
-            Url = 'https://github.com/itlezy/eMule-zlib.git'
+            Url = 'https://github.com/eMulebb/eMule-zlib.git'
             RelativePath = 'repos\third_party\eMule-zlib'
             Branch = 'zlib-v1.3.2-emule'
             UpdatePolicy = @{
