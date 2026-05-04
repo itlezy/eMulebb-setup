@@ -62,7 +62,7 @@
         }
         @{
             Name = 'amutorrent'
-            Url = 'https://github.com/itlezy/amutorrent.git'
+            Url = 'https://github.com/eMulebb/amutorrent.git'
             RelativePath = 'repos\amutorrent'
             Branch = 'main'
             AdditionalRemotes = @(
@@ -97,7 +97,7 @@
         }
         @{
             Name = 'mods-archive'
-            Url = 'https://github.com/itlezy/eMule-mods-archive.git'
+            Url = 'https://github.com/eMulebb/eMule-mods-archive.git'
             RelativePath = 'analysis\mods-archive'
             Branch = 'main'
             BranchOptional = $true
