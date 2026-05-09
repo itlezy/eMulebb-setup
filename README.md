@@ -3,6 +3,14 @@
 PowerShell helper for materializing a canonical multi-repo eMule workspace under
 `EMULE_WORKSPACE_ROOT`.
 
+## Purpose
+
+Use `workspace.ps1` to bootstrap and maintain setup-owned workspace state:
+repo clones, managed app worktrees, generated manifests, compare launchers,
+shared hook wiring, and setup validation. Build and test orchestration is
+intentionally delegated to `repos\eMule-build\workspace.ps1` after the
+workspace has been materialized.
+
 ## Layout
 
 ```text
@@ -53,6 +61,7 @@ EMULE_WORKSPACE_ROOT\
 ## Commands
 
 ```powershell
+pwsh -File .\workspace.ps1 help
 pwsh -File .\workspace.ps1 ensure-path
 pwsh -File .\workspace.ps1 init -EmuleWorkspaceRoot <workspace-root>
 pwsh -File .\workspace.ps1 materialize -EmuleWorkspaceRoot <workspace-root>

@@ -1,9 +1,21 @@
 #Requires -Version 7.6
+<#
+.SYNOPSIS
+Canonical setup and materialization entrypoint for an eMule BB workspace.
+
+.DESCRIPTION
+This script owns workspace bootstrap, setup-owned generated state, repo and
+worktree materialization, compare launcher generation, dependency update
+reporting, and setup validation. Build and test commands intentionally live in
+repos\eMule-build\workspace.ps1 after materialization. Run
+`pwsh -File .\workspace.ps1 help` for supported setup commands and common
+options.
+#>
 [CmdletBinding()]
 param(
     [Parameter(Position = 0)]
-    [ValidateSet('init', 'materialize', 'status', 'validate', 'sync', 'ensure-path', 'compare', 'dep-updates')]
-    [string]$Command = 'status',
+    [ValidateSet('help', 'init', 'materialize', 'status', 'validate', 'sync', 'ensure-path', 'compare', 'dep-updates')]
+    [string]$Command = 'help',
 
     [Parameter(Position = 1)]
     [string]$CompareKey,
@@ -15,11 +27,50 @@ param(
     [string]$ArtifactsSeedRoot,
 
     [ValidateSet('None', 'User')]
-    [string]$Persist = 'None'
+    [string]$Persist = 'None',
+
+    [switch]$Help
 )
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
+
+function Write-WorkspaceHelp {
+    @'
+eMulebb setup workspace orchestration
+
+Purpose:
+  Bootstrap, materialize, synchronize, inspect, and validate setup-owned
+  workspace state. Build and test commands live in repos\eMule-build.
+
+Usage:
+  pwsh -File .\workspace.ps1 help
+  pwsh -File .\workspace.ps1 <command> -EmuleWorkspaceRoot <workspace-root> [options]
+
+Commands:
+  help          Show this help.
+  ensure-path   Verify required tools and optionally persist PATH changes.
+  init          Initialize or refresh setup-owned workspace state.
+  materialize   Bootstrap a new canonical workspace.
+  sync          Refresh setup-owned workspace state and managed worktrees.
+  status        Report configured repo status.
+  dep-updates   Report advisory upstream dependency updates.
+  validate      Validate setup-owned layout and downstream build policy.
+  compare       Launch a configured comparison preset.
+
+Common options:
+  -EmuleWorkspaceRoot <path>  Workspace root. Defaults to EMULE_WORKSPACE_ROOT.
+  -WorkspaceName <name>       Workspace name. Defaults to repos.psd1.
+  -ArtifactsSeedRoot <path>   Optional dependency artifacts seed root.
+  -Persist None|User          Persistence mode for ensure-path. Default: None.
+  -Help                       Show this help.
+'@ | Write-Host
+}
+
+if ($Help -or $Command -eq 'help') {
+    Write-WorkspaceHelp
+    return
+}
 
 function Get-ScriptRoot {
     Split-Path -Parent $PSCommandPath
@@ -1359,7 +1410,7 @@ function Ensure-RootLayout {
 
 function Get-RootAgentsContent {
     @'
-ANALYZE THIS WORKSPACE
+ANALYZE THIS WORKSPACE, DIRECTORIES `repos` and `workspaces`
 ALWAYS READ AND FOLLOW EMULE_WORKSPACE_ROOT\repos\eMule-tooling\docs\WORKSPACE_POLICY.md
 '@
 }
@@ -2161,6 +2212,7 @@ $resolvedRoot = Resolve-EmuleWorkspaceRoot -Config $config -OverrideRoot $EmuleW
 $resolvedWorkspaceName = Resolve-WorkspaceName -Config $config -OverrideName $WorkspaceName
 
 switch ($Command) {
+    'help' { Write-WorkspaceHelp; break }
     'ensure-path' { Ensure-RequiredTools -PersistMode $Persist; break }
     'sync' {
         Invoke-Init -Root $resolvedRoot -Config $config -WorkspaceName $resolvedWorkspaceName -SeedRoot $ArtifactsSeedRoot
