@@ -8,8 +8,8 @@ live in `EMULE_WORKSPACE_ROOT\repos\eMule-build` and are run through:
 
 ```powershell
 python -m emule_workspace materialize
-python -m emule_workspace sync --workspace-root <workspace-root>
-python -m emule_workspace validate --workspace-root <workspace-root>
+python -m emule_workspace sync
+python -m emule_workspace validate
 ```
 
 The canonical bootstrap layout is:
